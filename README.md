@@ -22,8 +22,6 @@ Your Domain → MX Record → Your Server (SMTP :25) → Bot → Telegram
 - **Domain** with access to DNS settings
 - **Python 3.11+**
 
-> ⚠️ Port 25 is blocked by many cloud providers (AWS, GCP, Azure) by default. You may need to request it to be unblocked, or use a VPS provider like Hetzner, OVH, or DigitalOcean that allows it.
-
 ---
 
 ## Setup Guide
