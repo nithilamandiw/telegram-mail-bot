@@ -3,11 +3,13 @@ Lightweight SMTP server for receiving emails.
 
 Uses aiosmtpd to listen on port 25 (or configured port). When an email
 arrives, it parses the message and forwards it to the corresponding
-Telegram chat via the Bot API.
+Telegram chat via the Bot API — including attachments as files/photos.
 """
 
 import email
+import io
 import logging
+import mimetypes
 import re
 from email import policy
 from html import unescape
@@ -21,6 +23,7 @@ from database import Database
 logger = logging.getLogger(__name__)
 
 MAX_TELEGRAM_LENGTH = 4096
+TELEGRAM_FILE_LIMIT = 50 * 1024 * 1024  # 50 MB
 
 
 def strip_html(html_text: str) -> str:
@@ -61,12 +64,38 @@ def extract_body(msg):
 
 
 def extract_attachments(msg):
-    """Return filenames of all attachments."""
+    """Return list of dicts with filename, data, and content_type for each attachment."""
     attachments = []
-    if msg.is_multipart():
-        for part in msg.walk():
-            if "attachment" in str(part.get("Content-Disposition", "")):
-                attachments.append(part.get_filename() or "unnamed")
+    if not msg.is_multipart():
+        return attachments
+
+    for part in msg.walk():
+        disp = str(part.get("Content-Disposition", ""))
+        ctype = part.get_content_type()
+
+        # Skip text body parts
+        if ctype in ("text/plain", "text/html") and "attachment" not in disp:
+            continue
+
+        # Pick up both inline images and explicit attachments
+        if "attachment" in disp or "inline" in disp or ctype.startswith("image/"):
+            payload = part.get_payload(decode=True)
+            if not payload:
+                continue
+
+            filename = part.get_filename() or "unnamed"
+            # Guess extension if missing
+            if "." not in filename:
+                ext = mimetypes.guess_extension(ctype) or ""
+                filename += ext
+
+            attachments.append({
+                "filename": filename,
+                "data": payload,
+                "content_type": ctype,
+                "size": len(payload),
+            })
+
     return attachments
 
 
@@ -80,7 +109,7 @@ class EmailHandler:
     def __init__(self, bot_token: str, db: Database):
         self.bot_token = bot_token
         self.db = db
-        self.telegram_api = f"https://api.telegram.org/bot{bot_token}/sendMessage"
+        self.api_base = f"https://api.telegram.org/bot{bot_token}"
 
     async def handle_RCPT(self, server, session, envelope, address, rcpt_options):
         normalized = address.lower().strip()
@@ -111,6 +140,8 @@ class EmailHandler:
                 continue
 
             chat_id = record["chat_id"]
+
+            # Build the text message
             header = (
                 "📧 <b>New Email</b>\n\n"
                 f"<b>From:</b> {_escape_html(sender)}\n"
@@ -119,35 +150,106 @@ class EmailHandler:
                 f"<b>Date:</b> {_escape_html(date)}\n\n"
                 + "─" * 30 + "\n\n"
             )
-            att_text = ""
-            if attachments:
-                names = ", ".join(_escape_html(a) for a in attachments)
-                att_text = f"\n\n📎 <b>Attachments:</b> {names}"
 
-            avail = MAX_TELEGRAM_LENGTH - len(header) - len(att_text) - 20
+            att_summary = ""
+            if attachments:
+                names = ", ".join(_escape_html(a["filename"]) for a in attachments)
+                att_summary = f"\n\n📎 <b>{len(attachments)} attachment(s):</b> {names}"
+
+            avail = MAX_TELEGRAM_LENGTH - len(header) - len(att_summary) - 20
             escaped = _escape_html(body)
             if len(escaped) > avail:
                 escaped = escaped[: avail - 15] + "\n\n… [truncated]"
 
-            message = header + escaped + att_text
-            await self._send_telegram(chat_id, message)
+            message = header + escaped + att_summary
+
+            # Send the text message
+            await self._send_message(chat_id, message)
+
+            # Send each attachment
+            for att in attachments:
+                if att["size"] > TELEGRAM_FILE_LIMIT:
+                    await self._send_message(
+                        chat_id,
+                        f"⚠️ Attachment <code>{_escape_html(att['filename'])}</code> "
+                        f"is too large ({att['size'] // (1024*1024)} MB) — skipped."
+                    )
+                    continue
+
+                await self._send_attachment(chat_id, att)
 
         return "250 Message accepted for delivery"
 
-    async def _send_telegram(self, chat_id, text):
+    async def _send_message(self, chat_id: str, text: str) -> None:
+        """Send a text message to Telegram."""
         try:
             async with aiohttp.ClientSession() as session:
                 async with session.post(
-                    self.telegram_api,
-                    json={"chat_id": chat_id, "text": text, "parse_mode": "HTML", "disable_web_page_preview": True},
+                    f"{self.api_base}/sendMessage",
+                    json={
+                        "chat_id": chat_id,
+                        "text": text,
+                        "parse_mode": "HTML",
+                        "disable_web_page_preview": True,
+                    },
                     timeout=aiohttp.ClientTimeout(total=10),
                 ) as resp:
                     if resp.status != 200:
-                        logger.error("Telegram API %s: %s", resp.status, await resp.text())
+                        logger.error("Telegram sendMessage %s: %s", resp.status, await resp.text())
                     else:
-                        logger.info("Forwarded to chat_id=%s", chat_id)
+                        logger.info("Sent text to chat_id=%s", chat_id)
         except Exception:
-            logger.exception("Failed to send to chat_id=%s", chat_id)
+            logger.exception("Failed to send text to chat_id=%s", chat_id)
+
+    async def _send_attachment(self, chat_id: str, att: dict) -> None:
+        """Send an attachment as a photo (images) or document (everything else)."""
+        filename = att["filename"]
+        data = att["data"]
+        content_type = att["content_type"]
+
+        is_image = content_type.startswith("image/") and content_type != "image/svg+xml"
+
+        try:
+            async with aiohttp.ClientSession() as session:
+                form = aiohttp.FormData()
+                form.add_field("chat_id", chat_id)
+
+                if is_image:
+                    # Send as photo for better preview
+                    form.add_field(
+                        "photo",
+                        io.BytesIO(data),
+                        filename=filename,
+                        content_type=content_type,
+                    )
+                    form.add_field("caption", f"📎 {filename}")
+                    endpoint = f"{self.api_base}/sendPhoto"
+                else:
+                    # Send as document
+                    form.add_field(
+                        "document",
+                        io.BytesIO(data),
+                        filename=filename,
+                        content_type=content_type,
+                    )
+                    form.add_field("caption", f"📎 {filename}")
+                    endpoint = f"{self.api_base}/sendDocument"
+
+                async with session.post(
+                    endpoint,
+                    data=form,
+                    timeout=aiohttp.ClientTimeout(total=60),
+                ) as resp:
+                    if resp.status != 200:
+                        logger.error(
+                            "Telegram send attachment %s: %s",
+                            resp.status, await resp.text(),
+                        )
+                    else:
+                        logger.info("Sent attachment %s to chat_id=%s", filename, chat_id)
+
+        except Exception:
+            logger.exception("Failed to send attachment %s to chat_id=%s", filename, chat_id)
 
 
 def start_smtp_server(bot_token, db, host="0.0.0.0", port=25):
