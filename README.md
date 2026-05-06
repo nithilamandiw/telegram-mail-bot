@@ -66,7 +66,29 @@ SMTP_HOST=0.0.0.0
 SMTP_PORT=25
 ```
 
-### 4. Run the Bot
+### 4. Open Port 25 on Your VPS
+
+> ⚠️ **This is required!** Your VPS must allow incoming traffic on **port 25 (TCP)** for emails to arrive.
+
+**On your VPS provider's dashboard** (e.g. AWS Lightsail, DigitalOcean, etc.):
+
+1. Go to your instance → **Networking** / **Firewall** settings
+2. Add a new firewall rule:
+
+| Protocol | Port | Source |
+|---|---|---|
+| **TCP** | **25** | **Any IPv4 address** (`0.0.0.0/0`) |
+
+**Example (AWS Lightsail):**
+- Instance → Networking tab → IPv4 Firewall → **+ Add rule**
+- Application: `Custom`, Protocol: `TCP`, Port: `25`, Restricted to: `Any IPv4 address`
+
+**Also open port 25 on the OS firewall:**
+```bash
+sudo ufw allow 25/tcp
+```
+
+### 5. Run the Bot
 
 ```bash
 # Port 25 requires root on Linux
