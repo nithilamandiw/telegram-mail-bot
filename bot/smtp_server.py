@@ -224,7 +224,7 @@ class EmailHandler:
                 logger.exception("Failed to save email to DB")
 
             # Publish to Telegraph for full view
-            telegraph_link = ""
+            reply_markup = None
             if self.telegraph_client and body:
                 try:
                     from telegraph_publisher import publish_email_to_telegraph
@@ -235,14 +235,19 @@ class EmailHandler:
                         to_email=to_email,
                         date=date,
                         body_text=body,
+                        body_html=html_body,
                     )
                     if telegraph_url:
-                        telegraph_link = f"\n\n🌐 <a href=\"{telegraph_url}\">View Full Email</a>"
+                        reply_markup = {
+                            "inline_keyboard": [
+                                [{"text": "🌐 View Full Email", "url": telegraph_url}]
+                            ]
+                        }
                 except Exception:
                     logger.exception("Failed to publish to Telegraph")
 
             # Send the text message
-            await self._send_message(chat_id, message + telegraph_link)
+            await self._send_message(chat_id, message, reply_markup=reply_markup)
 
             # Send each attachment
             for att in attachments:

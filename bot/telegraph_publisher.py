@@ -7,14 +7,37 @@ No domain or web server needed — pages open in Telegram's built-in browser.
 
 import json
 import logging
+import re
 import uuid
-from html import escape as html_escape
 
 import aiohttp
 
 logger = logging.getLogger(__name__)
 
 TELEGRAPH_API = "https://api.telegra.ph"
+
+
+def extract_images_from_html(html_text: str) -> list:
+    """Extract image URLs from HTML email content."""
+    if not html_text:
+        return []
+
+    images = []
+    # Find all <img> tags with src attributes
+    for match in re.finditer(r'<img[^>]+src=["\']([^"\']+)["\']', html_text, re.IGNORECASE):
+        src = match.group(1)
+        # Only include absolute HTTP URLs (skip data URIs, CID refs, etc.)
+        if src.startswith("http"):
+            # Skip tiny tracking pixels (1x1)
+            width = re.search(r'width=["\']?(\d+)', match.group(0), re.IGNORECASE)
+            height = re.search(r'height=["\']?(\d+)', match.group(0), re.IGNORECASE)
+            if width and height:
+                w, h = int(width.group(1)), int(height.group(1))
+                if w <= 3 and h <= 3:
+                    continue  # Skip tracking pixels
+            images.append(src)
+
+    return images
 
 
 def text_to_nodes(plain_text: str) -> list:
@@ -27,7 +50,6 @@ def text_to_nodes(plain_text: str) -> list:
         text = para.strip()
         if not text:
             continue
-        # Convert single newlines within a paragraph to <br>
         parts = text.split("\n")
         children = []
         for i, part in enumerate(parts):
@@ -37,6 +59,19 @@ def text_to_nodes(plain_text: str) -> list:
         nodes.append({"tag": "p", "children": children})
 
     return nodes or [{"tag": "p", "children": ["(No content)"]}]
+
+
+def images_to_nodes(image_urls: list) -> list:
+    """Convert image URLs to Telegraph figure nodes."""
+    nodes = []
+    for url in image_urls:
+        nodes.append({
+            "tag": "figure",
+            "children": [
+                {"tag": "img", "attrs": {"src": url}},
+            ],
+        })
+    return nodes
 
 
 class TelegraphClient:
@@ -106,13 +141,14 @@ async def publish_email_to_telegraph(
     to_email: str,
     date: str,
     body_text: str,
+    body_html: str | None = None,
 ) -> str | None:
     """Publish an email to Telegraph and return the page URL."""
 
-    # Use random UUID as page title so URL is unguessable
+    # Random title → unguessable URL
     random_title = uuid.uuid4().hex
 
-    # Show real subject + metadata inside the page content
+    # Header with real subject
     header_nodes = [
         {"tag": "h3", "children": [subject or "(No subject)"]},
         {
@@ -128,8 +164,17 @@ async def publish_email_to_telegraph(
         {"tag": "hr"},
     ]
 
+    # Text body
     body_nodes = text_to_nodes(body_text)
-    all_nodes = header_nodes + body_nodes
+
+    # Extract images from HTML and add them
+    image_nodes = []
+    if body_html:
+        image_urls = extract_images_from_html(body_html)
+        if image_urls:
+            image_nodes = images_to_nodes(image_urls)
+
+    all_nodes = header_nodes + image_nodes + body_nodes
 
     # Telegraph ~64KB limit
     content_json = json.dumps(all_nodes)
