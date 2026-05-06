@@ -28,12 +28,33 @@ TELEGRAM_FILE_LIMIT = 50 * 1024 * 1024  # 50 MB
 
 def strip_html(html_text: str) -> str:
     """Remove HTML tags and decode entities to plain text."""
-    text = re.sub(r"<br\s*/?>", "\n", html_text, flags=re.IGNORECASE)
+    # Remove entire <head> section (contains meta, styles, scripts, etc.)
+    text = re.sub(r"<head[\s>].*?</head>", "", html_text, flags=re.IGNORECASE | re.DOTALL)
+    # Remove <style> blocks and their CSS content
+    text = re.sub(r"<style[\s>].*?</style>", "", text, flags=re.IGNORECASE | re.DOTALL)
+    # Remove <script> blocks
+    text = re.sub(r"<script[\s>].*?</script>", "", text, flags=re.IGNORECASE | re.DOTALL)
+    # Remove HTML comments (including conditional comments like <!--[if ...]>)
+    text = re.sub(r"<!--.*?-->", "", text, flags=re.DOTALL)
+    # Convert <br> to newlines
+    text = re.sub(r"<br\s*/?>", "\n", text, flags=re.IGNORECASE)
+    # Convert block-level elements to newlines for readability
     text = re.sub(r"<p[^>]*>", "\n", text, flags=re.IGNORECASE)
     text = re.sub(r"</p>", "\n", text, flags=re.IGNORECASE)
+    text = re.sub(r"<div[^>]*>", "\n", text, flags=re.IGNORECASE)
+    text = re.sub(r"</div>", "", text, flags=re.IGNORECASE)
+    text = re.sub(r"<tr[^>]*>", "\n", text, flags=re.IGNORECASE)
+    text = re.sub(r"<h[1-6][^>]*>", "\n\n", text, flags=re.IGNORECASE)
+    text = re.sub(r"</h[1-6]>", "\n", text, flags=re.IGNORECASE)
+    text = re.sub(r"<li[^>]*>", "\n• ", text, flags=re.IGNORECASE)
+    # Strip remaining HTML tags
     text = re.sub(r"<[^>]+>", "", text)
+    # Decode HTML entities
     text = unescape(text)
-    text = re.sub(r"\n{3,}", "\n\n", text)
+    # Clean up excessive whitespace
+    text = re.sub(r"[ \t]+", " ", text)           # collapse horizontal whitespace
+    text = re.sub(r" *\n *", "\n", text)          # trim spaces around newlines
+    text = re.sub(r"\n{3,}", "\n\n", text)        # max 2 consecutive newlines
     return text.strip()
 
 
