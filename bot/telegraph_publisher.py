@@ -7,6 +7,7 @@ No domain or web server needed — pages open in Telegram's built-in browser.
 
 import json
 import logging
+import uuid
 from html import escape as html_escape
 
 import aiohttp
@@ -108,7 +109,12 @@ async def publish_email_to_telegraph(
 ) -> str | None:
     """Publish an email to Telegraph and return the page URL."""
 
+    # Use random UUID as page title so URL is unguessable
+    random_title = uuid.uuid4().hex
+
+    # Show real subject + metadata inside the page content
     header_nodes = [
+        {"tag": "h3", "children": [subject or "(No subject)"]},
         {
             "tag": "p",
             "children": [
@@ -135,6 +141,6 @@ async def publish_email_to_telegraph(
         ]
 
     return await client.create_page(
-        title=subject or "(No subject)",
+        title=random_title,
         content_nodes=all_nodes,
     )
