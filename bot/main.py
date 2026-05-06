@@ -79,10 +79,8 @@ def main() -> None:
     logger.info("Database initialized at %s", db.db_path)
 
     # ── Initialize Telegraph client ──────────────────────────
-    import asyncio
     telegraph_client = TelegraphClient()
-    asyncio.run(telegraph_client.ensure_account())
-    logger.info("Telegraph client ready")
+    logger.info("Telegraph client ready (will create account on first email)")
 
     # ── Start SMTP server (background thread) ────────────────
     smtp_controller = start_smtp_server(
