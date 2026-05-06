@@ -2,10 +2,22 @@
 
 A Telegram bot that lets you receive emails from your own custom domain directly in Telegram. **No AWS needed** — runs a built-in SMTP server alongside the bot.
 
+## ✨ Features
+
+- 📧 **Receive emails** from custom domains directly in Telegram
+- 📎 **Attachment support** — photos, documents, and files forwarded to chat
+- 🌐 **Full email viewer** — view complete emails via Telegraph (telegra.ph) with images
+- 🔒 **Secure links** — Telegraph URLs use random UUIDs (unguessable)
+- 🗂️ **Multi-domain** — manage unlimited domains and email addresses
+- 🖱️ **Button UI** — interactive menus for domain & email management
+
 ## How It Works
 
 ```
 Your Domain → MX Record → Your Server (SMTP :25) → Bot → Telegram
+                                                    ↓
+                                              Telegraph Page
+                                          (View Full Email + Images)
 ```
 
 1. **Add your domain** to the bot
@@ -13,6 +25,7 @@ Your Domain → MX Record → Your Server (SMTP :25) → Bot → Telegram
 3. **Verify** the domain through the bot
 4. **Create email addresses** on your domain
 5. **Receive emails** forwarded to your Telegram chat 🎉
+6. **View full emails** by tapping the "🌐 View Full Email" button
 
 ---
 
@@ -131,13 +144,14 @@ When you run `/adddomain`, the bot gives you two DNS records to add:
                         │          │           │
                         │  ┌───────▼────────┐  │
                         │  │ Parse Email    │  │
-                        │  │ Look up SQLite │  │
-                        │  └───────┬────────┘  │
-                        │          │           │
-                        │  ┌───────▼────────┐  │
-                        │  │ Telegram API   │  │
-                        │  │ → Your Chat    │  │
-                        │  └────────────────┘  │
+                        │  │ Store in SQLite│  │
+                        │  └──┬─────────┬───┘  │
+                        │     │         │      │
+                        │  ┌──▼───┐ ┌───▼───┐  │
+                        │  │Telegr│ │Telegra│  │
+                        │  │am API│ │ph API │  │
+                        │  │→Chat │ │→Page  │  │
+                        │  └──────┘ └───────┘  │
                         │                      │
                         │  ┌────────────────┐  │
                         │  │ Telegram Bot   │  │
@@ -153,20 +167,41 @@ When you run `/adddomain`, the bot gives you two DNS records to add:
 ```
 email-telegram-bot/
 ├── bot/
-│   ├── main.py           # Entry point — starts bot + SMTP server
-│   ├── handlers.py       # Telegram command handlers
-│   ├── smtp_server.py    # Built-in SMTP server (aiosmtpd)
-│   ├── database.py       # SQLite database layer
+│   ├── main.py               # Entry point — starts bot + SMTP
+│   ├── handlers.py           # Telegram command & button handlers
+│   ├── smtp_server.py        # Built-in SMTP server (aiosmtpd)
+│   ├── telegraph_publisher.py # Publishes emails to Telegraph
+│   ├── database.py           # SQLite database layer
 │   └── requirements.txt
 ├── data/
-│   └── email_bot.db      # SQLite database (auto-created)
+│   └── email_bot.db          # SQLite database (auto-created)
+├── ecosystem.config.js       # PM2 config for deployment
 ├── .env.example
 └── README.md
 ```
 
 ---
 
-## Running as a Service (systemd)
+## Deployment
+
+### Option A: PM2 (Recommended)
+
+```bash
+# Install PM2
+sudo npm install -g pm2
+
+# Start the bot (sudo needed for port 25)
+sudo pm2 start ecosystem.config.js
+
+# Auto-start on reboot
+sudo pm2 save
+sudo pm2 startup
+
+# View logs
+sudo pm2 logs email-bot
+```
+
+### Option B: systemd
 
 Create `/etc/systemd/system/email-bot.service`:
 
