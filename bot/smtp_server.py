@@ -225,7 +225,7 @@ class EmailHandler:
 
             # Publish to Telegraph for full HTML view
             reply_markup = None
-            if self.telegraph_client and (html_body or body):
+            if self.telegraph_client and body:
                 try:
                     from telegraph_publisher import publish_email_to_telegraph
                     telegraph_url = await publish_email_to_telegraph(
@@ -234,7 +234,6 @@ class EmailHandler:
                         from_addr=sender,
                         to_email=to_email,
                         date=date,
-                        body_html=html_body,
                         body_text=body,
                     )
                     if telegraph_url:
