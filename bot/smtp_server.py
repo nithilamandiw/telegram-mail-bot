@@ -148,11 +148,11 @@ def _escape_html(text: str) -> str:
 class EmailHandler:
     """aiosmtpd handler — receives emails and forwards to Telegram."""
 
-    def __init__(self, bot_token: str, db: Database, web_base_url: str = ""):
+    def __init__(self, bot_token: str, db: Database, telegraph_client=None):
         self.bot_token = bot_token
         self.db = db
         self.api_base = f"https://api.telegram.org/bot{bot_token}"
-        self.web_base_url = web_base_url.rstrip("/")
+        self.telegraph_client = telegraph_client
 
     async def handle_RCPT(self, server, session, envelope, address, rcpt_options):
         normalized = address.lower().strip()
@@ -207,7 +207,7 @@ class EmailHandler:
 
             message = header + escaped + att_summary
 
-            # Save email to DB and build view button
+            # Save email to DB
             email_id = str(uuid.uuid4())
             try:
                 self.db.save_email(
@@ -223,15 +223,28 @@ class EmailHandler:
             except Exception:
                 logger.exception("Failed to save email to DB")
 
-            # Build inline keyboard with View button
+            # Publish to Telegraph for full HTML view
             reply_markup = None
-            if self.web_base_url:
-                view_url = f"{self.web_base_url}/view/{email_id}"
-                reply_markup = {
-                    "inline_keyboard": [
-                        [{"text": "🌐 View Full Email", "url": view_url}]
-                    ]
-                }
+            if self.telegraph_client and (html_body or body):
+                try:
+                    from telegraph_publisher import publish_email_to_telegraph
+                    telegraph_url = await publish_email_to_telegraph(
+                        client=self.telegraph_client,
+                        subject=subject,
+                        from_addr=sender,
+                        to_email=to_email,
+                        date=date,
+                        body_html=html_body,
+                        body_text=body,
+                    )
+                    if telegraph_url:
+                        reply_markup = {
+                            "inline_keyboard": [
+                                [{"text": "🌐 View Full Email", "url": telegraph_url}]
+                            ]
+                        }
+                except Exception:
+                    logger.exception("Failed to publish to Telegraph")
 
             # Send the text message
             await self._send_message(chat_id, message, reply_markup=reply_markup)
@@ -326,10 +339,11 @@ class EmailHandler:
             logger.exception("Failed to send attachment %s to chat_id=%s", filename, chat_id)
 
 
-def start_smtp_server(bot_token, db, host="0.0.0.0", port=25, web_base_url=""):
+def start_smtp_server(bot_token, db, host="0.0.0.0", port=25, telegraph_client=None):
     """Start SMTP server in background thread. Returns Controller."""
-    handler = EmailHandler(bot_token, db, web_base_url=web_base_url)
+    handler = EmailHandler(bot_token, db, telegraph_client=telegraph_client)
     controller = Controller(handler, hostname=host, port=port)
     controller.start()
     logger.info("SMTP server listening on %s:%d", host, port)
     return controller
+

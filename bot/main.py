@@ -51,7 +51,7 @@ from handlers import (
     view_domains_command,
 )
 from smtp_server import start_smtp_server
-from web_server import start_web_server
+from telegraph_publisher import TelegraphClient
 
 # ── Logging ──────────────────────────────────────────────────
 logging.basicConfig(
@@ -67,8 +67,6 @@ TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
 SMTP_HOST = os.getenv("SMTP_HOST", "0.0.0.0")
 SMTP_PORT = int(os.getenv("SMTP_PORT", "25"))
 SERVER_IP = os.getenv("SERVER_IP", "YOUR_SERVER_IP")
-WEB_PORT = int(os.getenv("WEB_PORT", "8025"))
-WEB_BASE_URL = os.getenv("WEB_BASE_URL", f"http://{SERVER_IP}:{WEB_PORT}")
 
 if not TELEGRAM_BOT_TOKEN:
     logger.error("TELEGRAM_BOT_TOKEN is not set. Exiting.")
@@ -80,9 +78,11 @@ def main() -> None:
     db = Database()
     logger.info("Database initialized at %s", db.db_path)
 
-    # ── Start Webmail server (background thread) ─────────────
-    start_web_server(db=db, host="0.0.0.0", port=WEB_PORT)
-    logger.info("Webmail viewer at %s", WEB_BASE_URL)
+    # ── Initialize Telegraph client ──────────────────────────
+    import asyncio
+    telegraph_client = TelegraphClient()
+    asyncio.get_event_loop().run_until_complete(telegraph_client.ensure_account())
+    logger.info("Telegraph client ready")
 
     # ── Start SMTP server (background thread) ────────────────
     smtp_controller = start_smtp_server(
@@ -90,7 +90,7 @@ def main() -> None:
         db=db,
         host=SMTP_HOST,
         port=SMTP_PORT,
-        web_base_url=WEB_BASE_URL,
+        telegraph_client=telegraph_client,
     )
 
     # ── Build Telegram bot ───────────────────────────────────
