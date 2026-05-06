@@ -81,7 +81,7 @@ def main() -> None:
     # ── Initialize Telegraph client ──────────────────────────
     import asyncio
     telegraph_client = TelegraphClient()
-    asyncio.get_event_loop().run_until_complete(telegraph_client.ensure_account())
+    asyncio.run(telegraph_client.ensure_account())
     logger.info("Telegraph client ready")
 
     # ── Start SMTP server (background thread) ────────────────
