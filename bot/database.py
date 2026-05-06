@@ -55,6 +55,21 @@ class Database:
 
             CREATE INDEX IF NOT EXISTS idx_addresses_domain
                 ON addresses(domain);
+
+            CREATE TABLE IF NOT EXISTS emails (
+                id         TEXT PRIMARY KEY,
+                chat_id    TEXT NOT NULL,
+                to_email   TEXT NOT NULL,
+                from_addr  TEXT NOT NULL,
+                subject    TEXT NOT NULL,
+                date       TEXT NOT NULL,
+                body_html  TEXT,
+                body_text  TEXT,
+                created_at TEXT NOT NULL
+            );
+
+            CREATE INDEX IF NOT EXISTS idx_emails_chat_id
+                ON emails(chat_id);
         """)
         conn.commit()
 
@@ -160,4 +175,30 @@ class Database:
         )
         self._conn.commit()
         return cursor.rowcount > 0
+
+    # ── Stored Emails (Webmail Viewer) ────────────────────────
+
+    def save_email(
+        self, email_id: str, chat_id: str, to_email: str,
+        from_addr: str, subject: str, date: str,
+        body_html: str | None, body_text: str | None,
+    ) -> None:
+        """Save a received email for web viewing."""
+        self._conn.execute(
+            "INSERT INTO emails (id, chat_id, to_email, from_addr, subject, date, body_html, body_text, created_at) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            (
+                email_id, chat_id, to_email, from_addr, subject, date,
+                body_html, body_text,
+                datetime.now(timezone.utc).isoformat(),
+            ),
+        )
+        self._conn.commit()
+
+    def get_email_by_id(self, email_id: str) -> dict | None:
+        """Look up a stored email by its UUID."""
+        row = self._conn.execute(
+            "SELECT * FROM emails WHERE id = ?", (email_id,)
+        ).fetchone()
+        return dict(row) if row else None
 

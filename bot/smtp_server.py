@@ -11,6 +11,7 @@ import io
 import logging
 import mimetypes
 import re
+import uuid
 from email import policy
 from html import unescape
 
@@ -84,6 +85,26 @@ def extract_body(msg):
     return body or "(No body content)"
 
 
+def extract_html_body(msg):
+    """Extract the raw HTML body (for web viewer), or None if not available."""
+    if msg.is_multipart():
+        for part in msg.walk():
+            ctype = part.get_content_type()
+            disp = str(part.get("Content-Disposition", ""))
+            if "attachment" in disp:
+                continue
+            if ctype == "text/html":
+                payload = part.get_payload(decode=True)
+                if payload:
+                    return payload.decode(part.get_content_charset() or "utf-8", errors="replace")
+    else:
+        if msg.get_content_type() == "text/html":
+            payload = msg.get_payload(decode=True)
+            if payload:
+                return payload.decode(msg.get_content_charset() or "utf-8", errors="replace")
+    return None
+
+
 def extract_attachments(msg):
     """Return list of dicts with filename, data, and content_type for each attachment."""
     attachments = []
@@ -127,10 +148,11 @@ def _escape_html(text: str) -> str:
 class EmailHandler:
     """aiosmtpd handler — receives emails and forwards to Telegram."""
 
-    def __init__(self, bot_token: str, db: Database):
+    def __init__(self, bot_token: str, db: Database, web_base_url: str = ""):
         self.bot_token = bot_token
         self.db = db
         self.api_base = f"https://api.telegram.org/bot{bot_token}"
+        self.web_base_url = web_base_url.rstrip("/")
 
     async def handle_RCPT(self, server, session, envelope, address, rcpt_options):
         normalized = address.lower().strip()
@@ -151,6 +173,7 @@ class EmailHandler:
         subject = msg.get("Subject", "(No subject)")
         date = msg.get("Date", "Unknown date")
         body = extract_body(msg)
+        html_body = extract_html_body(msg)
         attachments = extract_attachments(msg)
 
         for rcpt in envelope.rcpt_tos:
@@ -184,8 +207,34 @@ class EmailHandler:
 
             message = header + escaped + att_summary
 
+            # Save email to DB and build view button
+            email_id = str(uuid.uuid4())
+            try:
+                self.db.save_email(
+                    email_id=email_id,
+                    chat_id=chat_id,
+                    to_email=to_email,
+                    from_addr=sender,
+                    subject=subject,
+                    date=date,
+                    body_html=html_body,
+                    body_text=body,
+                )
+            except Exception:
+                logger.exception("Failed to save email to DB")
+
+            # Build inline keyboard with View button
+            reply_markup = None
+            if self.web_base_url:
+                view_url = f"{self.web_base_url}/view/{email_id}"
+                reply_markup = {
+                    "inline_keyboard": [
+                        [{"text": "🌐 View Full Email", "url": view_url}]
+                    ]
+                }
+
             # Send the text message
-            await self._send_message(chat_id, message)
+            await self._send_message(chat_id, message, reply_markup=reply_markup)
 
             # Send each attachment
             for att in attachments:
@@ -201,18 +250,22 @@ class EmailHandler:
 
         return "250 Message accepted for delivery"
 
-    async def _send_message(self, chat_id: str, text: str) -> None:
+    async def _send_message(self, chat_id: str, text: str, reply_markup: dict | None = None) -> None:
         """Send a text message to Telegram."""
         try:
+            payload = {
+                "chat_id": chat_id,
+                "text": text,
+                "parse_mode": "HTML",
+                "disable_web_page_preview": True,
+            }
+            if reply_markup:
+                payload["reply_markup"] = reply_markup
+
             async with aiohttp.ClientSession() as session:
                 async with session.post(
                     f"{self.api_base}/sendMessage",
-                    json={
-                        "chat_id": chat_id,
-                        "text": text,
-                        "parse_mode": "HTML",
-                        "disable_web_page_preview": True,
-                    },
+                    json=payload,
                     timeout=aiohttp.ClientTimeout(total=10),
                 ) as resp:
                     if resp.status != 200:
@@ -273,9 +326,9 @@ class EmailHandler:
             logger.exception("Failed to send attachment %s to chat_id=%s", filename, chat_id)
 
 
-def start_smtp_server(bot_token, db, host="0.0.0.0", port=25):
+def start_smtp_server(bot_token, db, host="0.0.0.0", port=25, web_base_url=""):
     """Start SMTP server in background thread. Returns Controller."""
-    handler = EmailHandler(bot_token, db)
+    handler = EmailHandler(bot_token, db, web_base_url=web_base_url)
     controller = Controller(handler, hostname=host, port=port)
     controller.start()
     logger.info("SMTP server listening on %s:%d", host, port)
