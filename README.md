@@ -43,8 +43,8 @@ Telegram → Bot → Resolve recipient MX → Deliver directly → Recipient Inb
 6. **View full emails** by tapping the "🌐 View Full Email" button
 
 ### Sending Emails
-1. Tap **✉️ Compose Email** in the bot menu
-2. **Select your From address** (from your added domain emails)
+1. Tap **✉️ Send Email** in the bot menu
+2. **Choose your domain** → **Select From address**
 3. **Enter recipient** → **Subject** → **Body**
 4. **Preview & Send** — delivered directly from your VPS ✉️
 
@@ -202,7 +202,7 @@ sudo iptables -t nat -A PREROUTING -p tcp --dport 25 -j REDIRECT --to-port 2525
 | 🗑️ Delete Domain | Remove a domain |
 | 📧 Create Email | Create a new email address |
 | 📋 My Emails | List all email addresses |
-| ✉️ Compose Email | **Send an email from your domain** |
+| ✉️ Send Email | **Send an email from your domain** |
 | 📤 Sent History | **View sent email history** |
 | 🗑️ Delete Email | Remove an email address |
 | ❓ Help | Show help guide |
@@ -230,7 +230,7 @@ sudo iptables -t nat -A PREROUTING -p tcp --dport 25 -j REDIRECT --to-port 2525
 
 ### Sending
 ```
-Tap "✉️ Compose Email"
+Tap "✉️ Send Email"
   → Select From: hello@example.com     ← your own domain email
   → Enter To: someone@gmail.com
   → Enter Subject: Hello!
