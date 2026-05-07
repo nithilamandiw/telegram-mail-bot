@@ -1,4 +1,6 @@
 python-telegram-bot==21.3
 aiosmtpd==1.4.6
 aiohttp==3.9.3
+aiosmtplib==3.0.1
+dnspython==2.6.1
 python-dotenv==1.0.1

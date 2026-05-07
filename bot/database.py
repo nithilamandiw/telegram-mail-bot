@@ -70,6 +70,20 @@ class Database:
 
             CREATE INDEX IF NOT EXISTS idx_emails_chat_id
                 ON emails(chat_id);
+
+            CREATE TABLE IF NOT EXISTS sent_emails (
+                id         TEXT PRIMARY KEY,
+                chat_id    TEXT NOT NULL,
+                from_addr  TEXT NOT NULL,
+                to_addr    TEXT NOT NULL,
+                subject    TEXT NOT NULL,
+                body       TEXT NOT NULL,
+                status     TEXT NOT NULL DEFAULT 'sent',
+                created_at TEXT NOT NULL
+            );
+
+            CREATE INDEX IF NOT EXISTS idx_sent_emails_chat_id
+                ON sent_emails(chat_id);
         """)
         conn.commit()
 
@@ -201,4 +215,30 @@ class Database:
             "SELECT * FROM emails WHERE id = ?", (email_id,)
         ).fetchone()
         return dict(row) if row else None
+
+    # ── Sent Emails (Outbox) ─────────────────────────────────
+
+    def save_sent_email(
+        self, email_id: str, chat_id: str, from_addr: str,
+        to_addr: str, subject: str, body: str, status: str = "sent",
+    ) -> None:
+        """Save an outgoing email to the sent history."""
+        self._conn.execute(
+            "INSERT INTO sent_emails (id, chat_id, from_addr, to_addr, subject, body, status, created_at) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+            (
+                email_id, chat_id, from_addr, to_addr, subject, body, status,
+                datetime.now(timezone.utc).isoformat(),
+            ),
+        )
+        self._conn.commit()
+
+    def get_sent_emails_for_chat(self, chat_id: str, limit: int = 20) -> list[dict]:
+        """Get recent sent emails for a chat."""
+        rows = self._conn.execute(
+            "SELECT * FROM sent_emails WHERE chat_id = ? ORDER BY created_at DESC LIMIT ?",
+            (chat_id, limit),
+        ).fetchall()
+        return [dict(r) for r in rows]
+
 

@@ -7,15 +7,10 @@ button-driven user experience. No need to type commands manually.
 
 import logging
 import re
+import uuid
 
 from telegram import InlineKeyboardButton, InlineKeyboardMarkup, Update
-from telegram.ext import (
-    CallbackQueryHandler,
-    ContextTypes,
-    ConversationHandler,
-    MessageHandler,
-    filters,
-)
+from telegram.ext import ContextTypes, ConversationHandler
 
 from database import Database
 
@@ -27,6 +22,11 @@ EMAIL_REGEX = re.compile(r"^[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}$")
 # ── Conversation states ──────────────────────────────────────
 WAITING_DOMAIN = 1
 WAITING_EMAIL = 2
+
+# Compose email states
+COMPOSE_WAITING_TO = 10
+COMPOSE_WAITING_SUBJECT = 11
+COMPOSE_WAITING_BODY = 12
 
 
 def get_db(context: ContextTypes.DEFAULT_TYPE) -> Database:
@@ -49,6 +49,10 @@ def main_menu_keyboard() -> InlineKeyboardMarkup:
             InlineKeyboardButton("📋 My Emails", callback_data="menu_list"),
         ],
         [
+            InlineKeyboardButton("✉️ Compose Email", callback_data="menu_compose"),
+            InlineKeyboardButton("📤 Sent History", callback_data="menu_sent"),
+        ],
+        [
             InlineKeyboardButton("🗑️ Delete Email", callback_data="menu_delete"),
             InlineKeyboardButton("❓ Help", callback_data="menu_help"),
         ],
@@ -63,13 +67,13 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     """Welcome message with main menu buttons."""
     text = (
         "📬 <b>Email Telegram Bot</b>\n\n"
-        "Receive emails from your own domain right here in Telegram!\n\n"
+        "Send \u0026 receive emails from your own domain right here in Telegram!\n\n"
         "<b>How it works:</b>\n"
         "1️⃣ Add your domain\n"
-        "2️⃣ Set DNS records (A + MX)\n"
+        "2️⃣ Set DNS records\n"
         "3️⃣ Verify the domain\n"
         "4️⃣ Create email addresses\n"
-        "5️⃣ Receive emails here 🎉\n\n"
+        "5️⃣ Receive \u0026 send emails 🎉\n\n"
         "Choose an option below 👇"
     )
     if update.callback_query:
@@ -103,6 +107,8 @@ async def help_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
         "✅ <b>Verify Domain</b> — Activate after DNS setup\n"
         "📧 <b>Create Email</b> — Add email addresses\n"
         "📋 <b>My Emails</b> — View all your emails\n"
+        "✉️ <b>Compose Email</b> — Send an email\n"
+        "📤 <b>Sent History</b> — View sent emails\n"
         "🗑️ <b>Delete Email</b> — Remove an email\n\n"
         "You can also type commands:\n"
         "<code>/start</code> — Main menu\n"
@@ -175,6 +181,7 @@ async def add_domain_receive(update: Update, context: ContextTypes.DEFAULT_TYPE)
     text = (
         f"✅ Domain <code>{domain}</code> registered!\n\n"
         "━━━━━━━━━━━━━━━━━━━━━━\n\n"
+        "📥 <b>FOR RECEIVING EMAILS</b>\n\n"
         "📌 <b>Step 1 — Add an A record:</b>\n\n"
         f"  Type:   <code>A</code>\n"
         f"  Name:   <code>mail</code>\n"
@@ -187,7 +194,19 @@ async def add_domain_receive(update: Update, context: ContextTypes.DEFAULT_TYPE)
         f"  Priority: <code>10</code>\n"
         f"  TTL:      <code>300</code>\n\n"
         "━━━━━━━━━━━━━━━━━━━━━━\n\n"
-        "⏳ After adding DNS records, click <b>Verify</b> below."
+        "📤 <b>FOR SENDING EMAILS</b>\n\n"
+        "📌 <b>Step 3 — Add an SPF record:</b>\n\n"
+        f"  Type:   <code>TXT</code>\n"
+        f"  Name:   <code>@</code>\n"
+        f"  Value:  <code>v=spf1 a mx ip4:{server_ip} -all</code>\n"
+        f"  TTL:    <code>300</code>\n\n"
+        "📌 <b>Step 4 — Add a DMARC record:</b>\n\n"
+        f"  Type:   <code>TXT</code>\n"
+        f"  Name:   <code>_dmarc</code>\n"
+        f"  Value:  <code>v=DMARC1; p=none;</code>\n"
+        f"  TTL:    <code>300</code>\n\n"
+        "━━━━━━━━━━━━━━━━━━━━━━\n\n"
+        "⏳ After adding all DNS records, click <b>Verify</b> below."
     )
     keyboard = InlineKeyboardMarkup([
         [InlineKeyboardButton(f"✅ Verify {domain}", callback_data=f"verify_{domain}")],
@@ -802,6 +821,354 @@ async def delete_domain_command(update: Update, context: ContextTypes.DEFAULT_TY
 
 
 # ══════════════════════════════════════════════════════════════
+#  Compose Email (Send Outgoing)
+# ══════════════════════════════════════════════════════════════
+
+def _escape_html(text: str) -> str:
+    return text.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
+
+
+async def compose_menu(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    """Show the user's email addresses to pick a 'From' address."""
+    query = update.callback_query
+    await query.answer()
+
+    chat_id = str(update.effective_chat.id)
+    db = get_db(context)
+    emails = db.get_emails_for_chat(chat_id)
+
+    if not emails:
+        keyboard = InlineKeyboardMarkup([
+            [InlineKeyboardButton("📧 Create Email First", callback_data="menu_create_email")],
+            [InlineKeyboardButton("🔙 Back to Menu", callback_data="back_menu")],
+        ])
+        await query.edit_message_text(
+            "📭 You don't have any email addresses yet.\n\n"
+            "Create one first, then come back to compose!",
+            reply_markup=keyboard,
+            parse_mode="HTML",
+        )
+        return ConversationHandler.END
+
+    buttons = [
+        [InlineKeyboardButton(f"📧 {e['email']}", callback_data=f"compose_from_{e['email']}")]
+        for e in emails
+    ]
+    buttons.append([InlineKeyboardButton("❌ Cancel", callback_data="back_menu")])
+
+    await query.edit_message_text(
+        "✉️ <b>Compose Email</b>\n\n"
+        "Select the <b>From</b> address:",
+        reply_markup=InlineKeyboardMarkup(buttons),
+        parse_mode="HTML",
+    )
+    return ConversationHandler.END
+
+
+async def compose_select_from(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    """User selected a 'From' address — ask for the recipient."""
+    query = update.callback_query
+    await query.answer()
+
+    from_addr = query.data.replace("compose_from_", "", 1)
+    context.user_data["compose"] = {"from": from_addr}
+
+    keyboard = InlineKeyboardMarkup([
+        [InlineKeyboardButton("❌ Cancel", callback_data="back_menu")]
+    ])
+    await query.edit_message_text(
+        "✉️ <b>Compose Email</b>\n\n"
+        f"<b>From:</b> <code>{from_addr}</code>\n\n"
+        "Now enter the <b>recipient's email address</b>:\n"
+        "<i>(e.g. someone@gmail.com)</i>",
+        reply_markup=keyboard,
+        parse_mode="HTML",
+    )
+    return COMPOSE_WAITING_TO
+
+
+async def compose_receive_to(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    """User typed the recipient — validate and ask for subject."""
+    to_addr = update.message.text.strip().lower()
+
+    if not EMAIL_REGEX.match(to_addr):
+        keyboard = InlineKeyboardMarkup([
+            [InlineKeyboardButton("❌ Cancel", callback_data="back_menu")]
+        ])
+        await update.message.reply_text(
+            "❌ Invalid email address.\n\n"
+            "Please enter a valid email (e.g. <code>someone@gmail.com</code>):",
+            reply_markup=keyboard,
+            parse_mode="HTML",
+        )
+        return COMPOSE_WAITING_TO
+
+    context.user_data["compose"]["to"] = to_addr
+
+    compose = context.user_data["compose"]
+    keyboard = InlineKeyboardMarkup([
+        [InlineKeyboardButton("❌ Cancel", callback_data="back_menu")]
+    ])
+    await update.message.reply_text(
+        "✉️ <b>Compose Email</b>\n\n"
+        f"<b>From:</b> <code>{compose['from']}</code>\n"
+        f"<b>To:</b> <code>{to_addr}</code>\n\n"
+        "Enter the <b>subject</b>:",
+        reply_markup=keyboard,
+        parse_mode="HTML",
+    )
+    return COMPOSE_WAITING_SUBJECT
+
+
+async def compose_receive_subject(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    """User typed the subject — ask for body."""
+    subject = update.message.text.strip()
+
+    if not subject:
+        keyboard = InlineKeyboardMarkup([
+            [InlineKeyboardButton("❌ Cancel", callback_data="back_menu")]
+        ])
+        await update.message.reply_text(
+            "❌ Subject cannot be empty. Please enter a subject:",
+            reply_markup=keyboard,
+            parse_mode="HTML",
+        )
+        return COMPOSE_WAITING_SUBJECT
+
+    context.user_data["compose"]["subject"] = subject
+
+    compose = context.user_data["compose"]
+    keyboard = InlineKeyboardMarkup([
+        [InlineKeyboardButton("❌ Cancel", callback_data="back_menu")]
+    ])
+    await update.message.reply_text(
+        "✉️ <b>Compose Email</b>\n\n"
+        f"<b>From:</b> <code>{compose['from']}</code>\n"
+        f"<b>To:</b> <code>{compose['to']}</code>\n"
+        f"<b>Subject:</b> {_escape_html(subject)}\n\n"
+        "Now type your <b>message body</b>:",
+        reply_markup=keyboard,
+        parse_mode="HTML",
+    )
+    return COMPOSE_WAITING_BODY
+
+
+async def compose_receive_body(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    """User typed the body — show preview and ask for confirmation."""
+    body = update.message.text.strip()
+
+    if not body:
+        keyboard = InlineKeyboardMarkup([
+            [InlineKeyboardButton("❌ Cancel", callback_data="back_menu")]
+        ])
+        await update.message.reply_text(
+            "❌ Message body cannot be empty. Please type your message:",
+            reply_markup=keyboard,
+            parse_mode="HTML",
+        )
+        return COMPOSE_WAITING_BODY
+
+    context.user_data["compose"]["body"] = body
+
+    compose = context.user_data["compose"]
+
+    # Truncate body preview if too long
+    preview_body = _escape_html(body)
+    if len(preview_body) > 500:
+        preview_body = preview_body[:500] + "\n\n… [truncated in preview]"
+
+    keyboard = InlineKeyboardMarkup([
+        [
+            InlineKeyboardButton("✅ Send", callback_data="compose_confirm"),
+            InlineKeyboardButton("❌ Cancel", callback_data="compose_cancel"),
+        ],
+    ])
+
+    await update.message.reply_text(
+        "✉️ <b>Review Your Email</b>\n\n"
+        "━━━━━━━━━━━━━━━━━━━━━━\n\n"
+        f"<b>From:</b> <code>{compose['from']}</code>\n"
+        f"<b>To:</b> <code>{compose['to']}</code>\n"
+        f"<b>Subject:</b> {_escape_html(compose['subject'])}\n\n"
+        "─" * 20 + "\n\n"
+        f"{preview_body}\n\n"
+        "━━━━━━━━━━━━━━━━━━━━━━\n\n"
+        "Send this email?",
+        reply_markup=keyboard,
+        parse_mode="HTML",
+    )
+    return ConversationHandler.END
+
+
+async def compose_confirm(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Send the composed email directly from the VPS."""
+    query = update.callback_query
+    await query.answer("Sending email… ✉️")
+
+    compose = context.user_data.get("compose")
+    if not compose or "body" not in compose:
+        keyboard = InlineKeyboardMarkup([
+            [InlineKeyboardButton("🔙 Back to Menu", callback_data="back_menu")]
+        ])
+        await query.edit_message_text(
+            "⚠️ Compose session expired. Please start again.",
+            reply_markup=keyboard,
+            parse_mode="HTML",
+        )
+        return
+
+    email_sender = context.bot_data.get("email_sender")
+    if not email_sender:
+        keyboard = InlineKeyboardMarkup([
+            [InlineKeyboardButton("🔙 Back to Menu", callback_data="back_menu")]
+        ])
+        await query.edit_message_text(
+            "⚠️ Email sending is not configured.",
+            reply_markup=keyboard,
+            parse_mode="HTML",
+        )
+        return
+
+    # Show sending status
+    await query.edit_message_text(
+        "⏳ <b>Sending your email…</b>",
+        parse_mode="HTML",
+    )
+
+    # Send the email
+    result = await email_sender.send_email(
+        from_addr=compose["from"],
+        to_addr=compose["to"],
+        subject=compose["subject"],
+        body=compose["body"],
+    )
+
+    chat_id = str(update.effective_chat.id)
+    db = get_db(context)
+
+    if result["success"]:
+        # Save to sent history
+        email_id = str(uuid.uuid4())
+        try:
+            db.save_sent_email(
+                email_id=email_id,
+                chat_id=chat_id,
+                from_addr=compose["from"],
+                to_addr=compose["to"],
+                subject=compose["subject"],
+                body=compose["body"],
+                status="sent",
+            )
+        except Exception:
+            logger.exception("Failed to save sent email to DB")
+
+        keyboard = InlineKeyboardMarkup([
+            [InlineKeyboardButton("✉️ Compose Another", callback_data="menu_compose")],
+            [InlineKeyboardButton("📤 Sent History", callback_data="menu_sent")],
+            [InlineKeyboardButton("🔙 Back to Menu", callback_data="back_menu")],
+        ])
+        await query.edit_message_text(
+            "✅ <b>Email Sent!</b>\n\n"
+            f"<b>From:</b> <code>{compose['from']}</code>\n"
+            f"<b>To:</b> <code>{compose['to']}</code>\n"
+            f"<b>Subject:</b> {_escape_html(compose['subject'])}\n\n"
+            "📬 Your email has been delivered.",
+            reply_markup=keyboard,
+            parse_mode="HTML",
+        )
+    else:
+        # Save failed attempt
+        try:
+            db.save_sent_email(
+                email_id=str(uuid.uuid4()),
+                chat_id=chat_id,
+                from_addr=compose["from"],
+                to_addr=compose["to"],
+                subject=compose["subject"],
+                body=compose["body"],
+                status="failed",
+            )
+        except Exception:
+            logger.exception("Failed to save failed email to DB")
+
+        keyboard = InlineKeyboardMarkup([
+            [InlineKeyboardButton("🔄 Try Again", callback_data="menu_compose")],
+            [InlineKeyboardButton("🔙 Back to Menu", callback_data="back_menu")],
+        ])
+        await query.edit_message_text(
+            "❌ <b>Failed to Send</b>\n\n"
+            f"<b>Error:</b> {_escape_html(result['error'] or 'Unknown error')}\n\n"
+            "Please check your DNS records and try again.",
+            reply_markup=keyboard,
+            parse_mode="HTML",
+        )
+
+    # Clear compose data
+    context.user_data.pop("compose", None)
+
+
+async def compose_cancel(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Cancel the compose flow."""
+    query = update.callback_query
+    await query.answer()
+    context.user_data.pop("compose", None)
+    return await start(update, context)
+
+
+# ══════════════════════════════════════════════════════════════
+#  Sent History
+# ══════════════════════════════════════════════════════════════
+
+async def sent_history_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Show recent sent emails."""
+    query = update.callback_query
+    await query.answer()
+
+    chat_id = str(update.effective_chat.id)
+    db = get_db(context)
+    sent = db.get_sent_emails_for_chat(chat_id, limit=10)
+
+    if not sent:
+        keyboard = InlineKeyboardMarkup([
+            [InlineKeyboardButton("✉️ Compose Email", callback_data="menu_compose")],
+            [InlineKeyboardButton("🔙 Back to Menu", callback_data="back_menu")],
+        ])
+        await query.edit_message_text(
+            "📤 <b>Sent History</b>\n\nNo emails sent yet.",
+            reply_markup=keyboard,
+            parse_mode="HTML",
+        )
+        return
+
+    lines = ["📤 <b>Sent History</b> (last 10)\n"]
+    for i, em in enumerate(sent, 1):
+        status_icon = "✅" if em["status"] == "sent" else "❌"
+        subj = _escape_html(em["subject"])
+        if len(subj) > 40:
+            subj = subj[:40] + "…"
+        lines.append(
+            f"\n{status_icon} <b>{i}.</b> → <code>{em['to_addr']}</code>\n"
+            f"    📝 {subj}\n"
+            f"    🕐 {em['created_at'][:16]}"
+        )
+
+    keyboard = InlineKeyboardMarkup([
+        [InlineKeyboardButton("✉️ Compose Email", callback_data="menu_compose")],
+        [InlineKeyboardButton("🔙 Back to Menu", callback_data="back_menu")],
+    ])
+
+    text = "\n".join(lines)
+    if len(text) > 4000:
+        text = text[:4000] + "\n\n… [truncated]"
+
+    await query.edit_message_text(
+        text,
+        reply_markup=keyboard,
+        parse_mode="HTML",
+    )
+
+
+# ══════════════════════════════════════════════════════════════
 #  Error handler
 # ══════════════════════════════════════════════════════════════
 
@@ -810,3 +1177,4 @@ async def error_handler(update: object, context: ContextTypes.DEFAULT_TYPE) -> N
     logger.error("Exception while handling update:", exc_info=context.error)
     if isinstance(update, Update) and update.effective_message:
         await update.effective_message.reply_text("⚠️ An unexpected error occurred. Try again later.")
+

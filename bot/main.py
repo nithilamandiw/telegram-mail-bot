@@ -20,13 +20,24 @@ from telegram.ext import (
 )
 
 from database import Database
+from email_sender import EmailSender
 from handlers import (
+    COMPOSE_WAITING_BODY,
+    COMPOSE_WAITING_SUBJECT,
+    COMPOSE_WAITING_TO,
     WAITING_DOMAIN,
     WAITING_EMAIL,
     add_domain_command,
     add_domain_prompt,
     add_domain_receive,
     back_to_menu,
+    compose_cancel,
+    compose_confirm,
+    compose_menu,
+    compose_receive_body,
+    compose_receive_subject,
+    compose_receive_to,
+    compose_select_from,
     create_email_command,
     create_email_menu,
     create_email_on_domain,
@@ -43,6 +54,7 @@ from handlers import (
     help_callback,
     list_emails_callback,
     list_emails_command,
+    sent_history_callback,
     start,
     verify_domain_action,
     verify_domain_command,
@@ -82,6 +94,10 @@ def main() -> None:
     telegraph_client = TelegraphClient()
     logger.info("Telegraph client ready (will create account on first email)")
 
+    # ── Initialize outgoing email sender (direct delivery) ───
+    email_sender = EmailSender()
+    logger.info("Outgoing email sender ready (direct delivery from VPS)")
+
     # ── Start SMTP server (background thread) ────────────────
     smtp_controller = start_smtp_server(
         bot_token=TELEGRAM_BOT_TOKEN,
@@ -96,6 +112,7 @@ def main() -> None:
 
     application.bot_data["db"] = db
     application.bot_data["server_ip"] = SERVER_IP
+    application.bot_data["email_sender"] = email_sender
 
     # ── Conversation: Add Domain ─────────────────────────────
     add_domain_conv = ConversationHandler(
@@ -131,11 +148,35 @@ def main() -> None:
         per_message=False,
     )
 
+    # ── Conversation: Compose Email (Send) ───────────────────
+    compose_email_conv = ConversationHandler(
+        entry_points=[
+            CallbackQueryHandler(compose_select_from, pattern=r"^compose_from_"),
+        ],
+        states={
+            COMPOSE_WAITING_TO: [
+                MessageHandler(filters.TEXT & ~filters.COMMAND, compose_receive_to),
+            ],
+            COMPOSE_WAITING_SUBJECT: [
+                MessageHandler(filters.TEXT & ~filters.COMMAND, compose_receive_subject),
+            ],
+            COMPOSE_WAITING_BODY: [
+                MessageHandler(filters.TEXT & ~filters.COMMAND, compose_receive_body),
+            ],
+        },
+        fallbacks=[
+            CallbackQueryHandler(back_to_menu, pattern="^back_menu$"),
+            CommandHandler("start", start),
+        ],
+        per_message=False,
+    )
+
     # ── Register handlers (order matters!) ───────────────────
 
     # Conversation handlers first (they have priority for their patterns)
     application.add_handler(add_domain_conv)
     application.add_handler(create_email_conv)
+    application.add_handler(compose_email_conv)
 
     # /start command
     application.add_handler(CommandHandler("start", start))
@@ -164,6 +205,12 @@ def main() -> None:
     application.add_handler(CallbackQueryHandler(delete_email_menu, pattern="^menu_delete$"))
     application.add_handler(CallbackQueryHandler(delete_email_confirm, pattern=r"^del_"))
     application.add_handler(CallbackQueryHandler(delete_email_execute, pattern=r"^confirm_del_"))
+
+    # Compose email callbacks
+    application.add_handler(CallbackQueryHandler(compose_menu, pattern="^menu_compose$"))
+    application.add_handler(CallbackQueryHandler(compose_confirm, pattern="^compose_confirm$"))
+    application.add_handler(CallbackQueryHandler(compose_cancel, pattern="^compose_cancel$"))
+    application.add_handler(CallbackQueryHandler(sent_history_callback, pattern="^menu_sent$"))
 
     # Error handler
     application.add_error_handler(error_handler)
