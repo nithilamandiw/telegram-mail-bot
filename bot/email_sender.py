@@ -140,36 +140,10 @@ def check_all_dns(domain: str, server_ip: str) -> dict:
     }
 
 
-def check_sending_dns(domain: str) -> dict:
-    """
-    Check DNS records needed for sending emails from a domain.
-    Returns a dict with status of each record.
-    """
-    spf = check_spf_record(domain)
-    dmarc = check_dmarc_record(domain)
-
-    all_good = spf["exists"] and dmarc
-    missing = []
-    if not spf["exists"]:
-        missing.append("SPF")
-    if not dmarc:
-        missing.append("DMARC")
-
-    return {
-        "ready": all_good,
-        "spf": spf["exists"],
-        "dmarc": dmarc,
-        "missing": missing,
-    }
 
 
 class EmailSender:
     """Send emails directly from the VPS to recipient mail servers."""
-
-    @property
-    def is_configured(self) -> bool:
-        """Direct sending is always available — no credentials needed."""
-        return True
 
     async def send_email(
         self,

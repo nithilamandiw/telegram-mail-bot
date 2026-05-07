@@ -1141,20 +1141,25 @@ async def compose_confirm(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
     from_domain = compose["from"].split("@")[1]
     server_ip = context.bot_data.get("server_ip", "YOUR_SERVER_IP")
 
-    from email_sender import check_sending_dns
-    dns_status = check_sending_dns(from_domain)
+    from email_sender import check_all_dns
+    dns_status = check_all_dns(from_domain, server_ip)
 
-    if not dns_status["ready"]:
-        missing = ", ".join(dns_status["missing"])
+    if not dns_status["send_ready"]:
+        missing = []
+        if not dns_status["spf_record"]["exists"]:
+            missing.append("SPF")
+        if not dns_status["dmarc_record"]:
+            missing.append("DMARC")
+        missing_str = ", ".join(missing)
         dns_help = []
-        if not dns_status["spf"]:
+        if not dns_status["spf_record"]["exists"]:
             dns_help.append(
                 f"📌 <b>SPF record:</b>\n"
                 f"  Type: <code>TXT</code>\n"
                 f"  Name: <code>@</code>\n"
                 f"  Value: <code>v=spf1 a mx ip4:{server_ip} -all</code>"
             )
-        if not dns_status["dmarc"]:
+        if not dns_status["dmarc_record"]:
             dns_help.append(
                 f"📌 <b>DMARC record:</b>\n"
                 f"  Type: <code>TXT</code>\n"
@@ -1170,7 +1175,7 @@ async def compose_confirm(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
         await query.edit_message_text(
             f"⚠️ <b>DNS Not Ready for Sending</b>\n\n"
             f"Your domain <code>{from_domain}</code> is missing "
-            f"<b>{missing}</b> DNS record(s).\n\n"
+            f"<b>{missing_str}</b> DNS record(s).\n\n"
             "Without these, emails will be rejected or land in spam.\n\n"
             "━━━━━━━━━━━━━━━━━━━━━━\n\n"
             "Add these DNS records:\n\n"
