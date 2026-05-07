@@ -76,8 +76,9 @@ cd telegram-mail-bot
 ### 3. Install Dependencies
 
 ```bash
-cd bot
-pip install -r requirements.txt
+python3 -m venv venv
+source venv/bin/activate
+pip install -r bot/requirements.txt
 ```
 
 ### 4. Configure Environment
@@ -135,11 +136,41 @@ nc -zv gmail-smtp-in.l.google.com 25 -w 5
 - ✅ `Connection succeeded` → sending will work
 - ❌ `Timed out` → outbound port 25 is still blocked
 
-### 6. DNS Setup
+### 6. Run the Bot
+
+**Quick test (manual):**
+```bash
+# Port 25 requires root on Linux
+sudo /home/ubuntu/telegram-mail-bot/venv/bin/python bot/main.py
+```
+
+**Production (PM2 — runs 24/7, auto-restarts):**
+```bash
+# Install PM2 if not installed
+sudo npm install -g pm2
+
+# Start the bot
+sudo pm2 start ecosystem.config.js
+
+# Save & enable auto-start on reboot
+sudo pm2 save
+sudo pm2 startup
+```
+
+**Useful PM2 commands:**
+```bash
+sudo pm2 status              # Check if running
+sudo pm2 logs email-bot      # View logs
+sudo pm2 restart email-bot   # Restart after code changes
+```
+
+### 7. DNS Setup
+
+> 💡 Once the bot is running, use `/adddomain` to register your domain. The bot will show you exactly which DNS records to add and let you verify them with the **🔍 Check DNS** button.
 
 #### For Receiving Emails
 
-When you run `/adddomain`, the bot gives you two DNS records to add:
+The bot gives you two DNS records to add:
 
 | Step | Type | Host | Value | Priority |
 |---|---|---|---|---|
@@ -159,22 +190,6 @@ To improve deliverability and avoid spam folders, add these DNS records:
 | **PTR** | *(set via VPS provider)* | `mail.yourdomain.com` | Reverse DNS — proves IP ownership |
 
 > 💡 **SPF is the most important one.** It tells recipient mail servers that your VPS IP is authorized to send emails for your domain.
-
-### 7. Run the Bot
-
-```bash
-# Port 25 requires root on Linux
-sudo python bot/main.py
-```
-
-Or use a non-privileged port and redirect with iptables:
-```bash
-# Run on port 2525
-SMTP_PORT=2525 python bot/main.py
-
-# Redirect port 25 → 2525
-sudo iptables -t nat -A PREROUTING -p tcp --dport 25 -j REDIRECT --to-port 2525
-```
 
 ---
 
