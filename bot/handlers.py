@@ -206,9 +206,10 @@ async def add_domain_receive(update: Update, context: ContextTypes.DEFAULT_TYPE)
         f"  Value:  <code>v=DMARC1; p=none;</code>\n"
         f"  TTL:    <code>300</code>\n\n"
         "━━━━━━━━━━━━━━━━━━━━━━\n\n"
-        "⏳ After adding all DNS records, click <b>Verify</b> below."
+        "⏳ After adding all DNS records, tap \u003cb\u003eCheck DNS\u003c/b\u003e to verify."
     )
     keyboard = InlineKeyboardMarkup([
+        [InlineKeyboardButton(f"🔍 Check DNS for {domain}", callback_data=f"dnscheck_{domain}")],
         [InlineKeyboardButton(f"✅ Verify {domain}", callback_data=f"verify_{domain}")],
         [InlineKeyboardButton("🔙 Back to Menu", callback_data="back_menu")],
     ])
@@ -233,6 +234,113 @@ async def add_domain_command(update: Update, context: ContextTypes.DEFAULT_TYPE)
 # ══════════════════════════════════════════════════════════════
 #  Verify Domain
 # ══════════════════════════════════════════════════════════════
+
+async def dns_check_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Check all DNS records for a domain and show status."""
+    query = update.callback_query
+    await query.answer("Checking DNS records… 🔍")
+
+    domain = query.data.replace("dnscheck_", "", 1)
+    server_ip = context.bot_data.get("server_ip", "YOUR_SERVER_IP")
+
+    from email_sender import check_all_dns
+    status = check_all_dns(domain, server_ip)
+
+    lines = [f"🔍 <b>DNS Check for</b> <code>{domain}</code>\n"]
+    lines.append("━━━━━━━━━━━━━━━━━━━━━━\n")
+
+    # 1. A Record
+    a = status["a_record"]
+    if a.get("correct"):
+        lines.append(f"✅ <b>A Record</b> — <code>mail.{domain}</code> → <code>{a['value']}</code>")
+    elif a.get("exists"):
+        lines.append(
+            f"⚠️ <b>A Record</b> — points to <code>{a['value']}</code> "
+            f"(expected <code>{server_ip}</code>)"
+        )
+    else:
+        lines.append(
+            f"❌ <b>A Record</b> — not found\n"
+            f"  Type: <code>A</code>\n"
+            f"  Name: <code>mail</code>\n"
+            f"  Value: <code>{server_ip}</code>"
+        )
+
+    # 2. MX Record
+    mx = status["mx_record"]
+    if mx.get("correct"):
+        lines.append(f"\n✅ <b>MX Record</b> — <code>{domain}</code> → <code>{mx['value']}</code>")
+    elif mx.get("exists"):
+        lines.append(
+            f"\n⚠️ <b>MX Record</b> — points to <code>{mx['value']}</code> "
+            f"(expected <code>mail.{domain}</code>)"
+        )
+    else:
+        lines.append(
+            f"\n❌ <b>MX Record</b> — not found\n"
+            f"  Type: <code>MX</code>\n"
+            f"  Name: <code>@</code>\n"
+            f"  Value: <code>mail.{domain}</code>\n"
+            f"  Priority: <code>10</code>"
+        )
+
+    # 3. SPF Record
+    spf = status["spf_record"]
+    if spf["exists"]:
+        lines.append(f"\n✅ <b>SPF Record</b> — <code>{spf['record']}</code>")
+    else:
+        lines.append(
+            f"\n❌ <b>SPF Record</b> — not found\n"
+            f"  Type: <code>TXT</code>\n"
+            f"  Name: <code>@</code>\n"
+            f"  Value: <code>v=spf1 a mx ip4:{server_ip} -all</code>"
+        )
+
+    # 4. DMARC Record
+    dmarc = status["dmarc_record"]
+    if dmarc:
+        lines.append(f"\n✅ <b>DMARC Record</b> — found")
+    else:
+        lines.append(
+            f"\n❌ <b>DMARC Record</b> — not found\n"
+            f"  Type: <code>TXT</code>\n"
+            f"  Name: <code>_dmarc</code>\n"
+            f"  Value: <code>v=DMARC1; p=none;</code>"
+        )
+
+    lines.append("\n━━━━━━━━━━━━━━━━━━━━━━")
+
+    # Summary
+    if status["all_ready"]:
+        lines.append("\n🎉 <b>All DNS records are set up!</b> You can verify and start using your domain.")
+    else:
+        if status["receive_ready"]:
+            lines.append("\n📥 Receiving: ✅ Ready")
+        else:
+            lines.append("\n📥 Receiving: ❌ Not ready")
+        if status["send_ready"]:
+            lines.append("📤 Sending: ✅ Ready")
+        else:
+            lines.append("📤 Sending: ❌ Not ready")
+        lines.append("\n💡 Add the missing records above, then tap <b>🔄 Refresh</b>.")
+
+    keyboard_buttons = [
+        [InlineKeyboardButton(f"🔄 Refresh", callback_data=f"dnscheck_{domain}")],
+    ]
+    if status["receive_ready"]:
+        keyboard_buttons.append(
+            [InlineKeyboardButton(f"✅ Verify {domain}", callback_data=f"verify_{domain}")]
+        )
+    keyboard_buttons.append(
+        [InlineKeyboardButton("🔙 Back to Menu", callback_data="back_menu")]
+    )
+
+    await query.edit_message_text(
+        "\n".join(lines),
+        reply_markup=InlineKeyboardMarkup(keyboard_buttons),
+        parse_mode="HTML",
+    )
+
 
 async def verify_menu(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """Show list of unverified domains as buttons."""

@@ -34,6 +34,7 @@ from handlers import (
     compose_cancel,
     compose_confirm,
     compose_menu,
+    dns_check_callback,
     compose_receive_body,
     compose_receive_subject,
     compose_receive_to,
@@ -195,6 +196,7 @@ def main() -> None:
     application.add_handler(CallbackQueryHandler(back_to_menu, pattern="^back_menu$"))
     application.add_handler(CallbackQueryHandler(help_callback, pattern="^menu_help$"))
     application.add_handler(CallbackQueryHandler(verify_menu, pattern="^menu_verify$"))
+    application.add_handler(CallbackQueryHandler(dns_check_callback, pattern=r"^dnscheck_"))
     application.add_handler(CallbackQueryHandler(verify_domain_action, pattern=r"^verify_"))
     application.add_handler(CallbackQueryHandler(view_domains_callback, pattern="^menu_domains$"))
     application.add_handler(CallbackQueryHandler(delete_domain_menu, pattern="^menu_del_domain$"))

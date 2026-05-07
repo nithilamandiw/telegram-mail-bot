@@ -44,6 +44,49 @@ def resolve_mx(domain: str) -> list[str]:
         return [domain]
 
 
+def check_a_record(domain: str, expected_ip: str) -> dict:
+    """
+    Check if mail.<domain> has an A record pointing to the expected IP.
+    Returns dict with 'exists' (bool) and 'value' (str or None).
+    """
+    hostname = f"mail.{domain}"
+    try:
+        answers = dns.resolver.resolve(hostname, "A")
+        for rdata in answers:
+            ip = str(rdata)
+            if ip == expected_ip:
+                return {"exists": True, "value": ip, "correct": True}
+            return {"exists": True, "value": ip, "correct": False}
+        return {"exists": False, "value": None, "correct": False}
+    except (dns.resolver.NoAnswer, dns.resolver.NXDOMAIN):
+        return {"exists": False, "value": None, "correct": False}
+    except Exception as e:
+        logger.warning("Failed to check A record for %s: %s", hostname, e)
+        return {"exists": False, "value": None, "correct": False}
+
+
+def check_mx_record(domain: str) -> dict:
+    """
+    Check if the domain has an MX record pointing to mail.<domain>.
+    Returns dict with 'exists' (bool) and 'value' (str or None).
+    """
+    expected = f"mail.{domain}"
+    try:
+        answers = dns.resolver.resolve(domain, "MX")
+        for rdata in answers:
+            mx_host = str(rdata.exchange).rstrip(".")
+            if mx_host.lower() == expected.lower():
+                return {"exists": True, "value": mx_host, "correct": True}
+        # MX exists but points elsewhere
+        first = str(list(answers)[0].exchange).rstrip(".")
+        return {"exists": True, "value": first, "correct": False}
+    except (dns.resolver.NoAnswer, dns.resolver.NXDOMAIN):
+        return {"exists": False, "value": None, "correct": False}
+    except Exception as e:
+        logger.warning("Failed to check MX for %s: %s", domain, e)
+        return {"exists": False, "value": None, "correct": False}
+
+
 def check_spf_record(domain: str) -> dict:
     """
     Check if the domain has an SPF record that authorizes this server.
@@ -76,9 +119,30 @@ def check_dmarc_record(domain: str) -> bool:
         return False
 
 
+def check_all_dns(domain: str, server_ip: str) -> dict:
+    """
+    Check all 4 DNS records needed for full email functionality.
+    Returns a detailed status dict for each record.
+    """
+    a = check_a_record(domain, server_ip)
+    mx = check_mx_record(domain)
+    spf = check_spf_record(domain)
+    dmarc = check_dmarc_record(domain)
+
+    return {
+        "a_record": a,
+        "mx_record": mx,
+        "spf_record": spf,
+        "dmarc_record": dmarc,
+        "receive_ready": a.get("correct", False) and mx.get("correct", False),
+        "send_ready": spf["exists"] and dmarc,
+        "all_ready": a.get("correct", False) and mx.get("correct", False) and spf["exists"] and dmarc,
+    }
+
+
 def check_sending_dns(domain: str) -> dict:
     """
-    Check all DNS records needed for sending emails from a domain.
+    Check DNS records needed for sending emails from a domain.
     Returns a dict with status of each record.
     """
     spf = check_spf_record(domain)
