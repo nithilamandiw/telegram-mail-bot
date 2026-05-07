@@ -21,6 +21,8 @@ Want to try it out? A live instance is already deployed and running:
 
 Open the bot in Telegram and send `/start` to get started!
 
+> ⚠️ **Note:** Sending emails is currently unavailable in the demo bot because the hosting provider (AWS) blocks outbound port 25. Receiving emails works normally. To enable sending, deploy on a VPS that allows outbound port 25 (e.g. Hetzner, OVH, Vultr).
+
 ## How It Works
 
 ```
