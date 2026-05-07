@@ -33,7 +33,9 @@ from handlers import (
     back_to_menu,
     compose_cancel,
     compose_confirm,
+    compose_emails_page,
     compose_menu,
+    compose_select_domain,
     dns_check_callback,
     compose_receive_body,
     compose_receive_subject,
@@ -210,9 +212,17 @@ def main() -> None:
 
     # Compose email callbacks
     application.add_handler(CallbackQueryHandler(compose_menu, pattern="^menu_compose$"))
+    application.add_handler(CallbackQueryHandler(compose_select_domain, pattern=r"^send_domain_"))
+    application.add_handler(CallbackQueryHandler(compose_emails_page, pattern=r"^send_emails_"))
     application.add_handler(CallbackQueryHandler(compose_confirm, pattern="^compose_confirm$"))
     application.add_handler(CallbackQueryHandler(compose_cancel, pattern="^compose_cancel$"))
     application.add_handler(CallbackQueryHandler(sent_history_callback, pattern="^menu_sent$"))
+
+    # Noop handler (for pagination page number display button)
+    application.add_handler(CallbackQueryHandler(
+        lambda update, context: update.callback_query.answer(),
+        pattern="^noop$",
+    ))
 
     # Error handler
     application.add_error_handler(error_handler)

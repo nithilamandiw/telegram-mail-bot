@@ -49,7 +49,7 @@ def main_menu_keyboard() -> InlineKeyboardMarkup:
             InlineKeyboardButton("📋 My Emails", callback_data="menu_list"),
         ],
         [
-            InlineKeyboardButton("✉️ Compose Email", callback_data="menu_compose"),
+            InlineKeyboardButton("✉️ Send Email", callback_data="menu_compose"),
             InlineKeyboardButton("📤 Sent History", callback_data="menu_sent"),
         ],
         [
@@ -107,7 +107,7 @@ async def help_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
         "✅ <b>Verify Domain</b> — Activate after DNS setup\n"
         "📧 <b>Create Email</b> — Add email addresses\n"
         "📋 <b>My Emails</b> — View all your emails\n"
-        "✉️ <b>Compose Email</b> — Send an email\n"
+        "✉️ <b>Send Email</b> — Send an email\n"
         "📤 <b>Sent History</b> — View sent emails\n"
         "🗑️ <b>Delete Email</b> — Remove an email\n\n"
         "You can also type commands:\n"
@@ -929,44 +929,126 @@ async def delete_domain_command(update: Update, context: ContextTypes.DEFAULT_TY
 
 
 # ══════════════════════════════════════════════════════════════
-#  Compose Email (Send Outgoing)
+#  Send Email (Outgoing)
 # ══════════════════════════════════════════════════════════════
+
+EMAILS_PER_PAGE = 10
 
 def _escape_html(text: str) -> str:
     return text.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
 
 
 async def compose_menu(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
-    """Show the user's email addresses to pick a 'From' address."""
+    """Step 1: Show verified domains to pick which domain to send from."""
     query = update.callback_query
     await query.answer()
 
     chat_id = str(update.effective_chat.id)
     db = get_db(context)
-    emails = db.get_emails_for_chat(chat_id)
+    domains = db.get_domains_for_chat(chat_id)
+    verified = [d for d in domains if d["verified"]]
 
-    if not emails:
+    if not verified:
         keyboard = InlineKeyboardMarkup([
-            [InlineKeyboardButton("📧 Create Email First", callback_data="menu_create_email")],
+            [InlineKeyboardButton("➕ Add Domain", callback_data="menu_add_domain")],
             [InlineKeyboardButton("🔙 Back to Menu", callback_data="back_menu")],
         ])
         await query.edit_message_text(
-            "📭 You don't have any email addresses yet.\n\n"
-            "Create one first, then come back to compose!",
+            "📭 You don't have any verified domains yet.\n\n"
+            "Add and verify a domain first!",
             reply_markup=keyboard,
             parse_mode="HTML",
         )
         return ConversationHandler.END
 
     buttons = [
-        [InlineKeyboardButton(f"📧 {e['email']}", callback_data=f"compose_from_{e['email']}")]
-        for e in emails
+        [InlineKeyboardButton(f"🌐 {d['domain']}", callback_data=f"send_domain_{d['domain']}")]
+        for d in verified
     ]
     buttons.append([InlineKeyboardButton("❌ Cancel", callback_data="back_menu")])
 
     await query.edit_message_text(
-        "✉️ <b>Compose Email</b>\n\n"
-        "Select the <b>From</b> address:",
+        "✉️ <b>Send Email</b>\n\n"
+        "Select the <b>domain</b> to send from:",
+        reply_markup=InlineKeyboardMarkup(buttons),
+        parse_mode="HTML",
+    )
+    return ConversationHandler.END
+
+
+async def compose_select_domain(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    """Step 2: User picked a domain — show paginated emails for that domain."""
+    query = update.callback_query
+    await query.answer()
+
+    domain = query.data.replace("send_domain_", "", 1)
+    context.user_data["compose"] = {"domain": domain}
+
+    return await _show_emails_page(update, context, domain, page=0)
+
+
+async def compose_emails_page(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    """Handle pagination for email selection."""
+    query = update.callback_query
+    await query.answer()
+
+    # Pattern: send_emails_<domain>_page_<N>
+    data = query.data.replace("send_emails_", "", 1)
+    parts = data.rsplit("_page_", 1)
+    domain = parts[0]
+    page = int(parts[1]) if len(parts) == 2 else 0
+
+    return await _show_emails_page(update, context, domain, page)
+
+
+async def _show_emails_page(update: Update, context, domain: str, page: int) -> int:
+    """Show a page of emails for a domain."""
+    query = update.callback_query
+    chat_id = str(update.effective_chat.id)
+    db = get_db(context)
+    emails = db.get_emails_for_domain(chat_id, domain)
+
+    if not emails:
+        keyboard = InlineKeyboardMarkup([
+            [InlineKeyboardButton("📧 Create Email", callback_data="menu_create_email")],
+            [InlineKeyboardButton("🔙 Back", callback_data="menu_compose")],
+        ])
+        await query.edit_message_text(
+            f"📭 No email addresses on <code>{domain}</code>.\n\n"
+            "Create one first!",
+            reply_markup=keyboard,
+            parse_mode="HTML",
+        )
+        return ConversationHandler.END
+
+    total = len(emails)
+    total_pages = (total + EMAILS_PER_PAGE - 1) // EMAILS_PER_PAGE
+    page = max(0, min(page, total_pages - 1))
+    start_idx = page * EMAILS_PER_PAGE
+    page_emails = emails[start_idx:start_idx + EMAILS_PER_PAGE]
+
+    buttons = [
+        [InlineKeyboardButton(f"📧 {e['email']}", callback_data=f"compose_from_{e['email']}")]
+        for e in page_emails
+    ]
+
+    # Pagination buttons
+    if total_pages > 1:
+        nav = []
+        if page > 0:
+            nav.append(InlineKeyboardButton("⬅️ Prev", callback_data=f"send_emails_{domain}_page_{page - 1}"))
+        nav.append(InlineKeyboardButton(f"{page + 1}/{total_pages}", callback_data="noop"))
+        if page < total_pages - 1:
+            nav.append(InlineKeyboardButton("Next ➡️", callback_data=f"send_emails_{domain}_page_{page + 1}"))
+        buttons.append(nav)
+
+    buttons.append([InlineKeyboardButton("🔙 Back to Domains", callback_data="menu_compose")])
+    buttons.append([InlineKeyboardButton("❌ Cancel", callback_data="back_menu")])
+
+    await query.edit_message_text(
+        f"✉️ <b>Send Email</b>\n\n"
+        f"Domain: <code>{domain}</code>\n\n"
+        f"Select the <b>From</b> address ({total} total):",
         reply_markup=InlineKeyboardMarkup(buttons),
         parse_mode="HTML",
     )
@@ -985,7 +1067,7 @@ async def compose_select_from(update: Update, context: ContextTypes.DEFAULT_TYPE
         [InlineKeyboardButton("❌ Cancel", callback_data="back_menu")]
     ])
     await query.edit_message_text(
-        "✉️ <b>Compose Email</b>\n\n"
+        "✉️ <b>Send Email</b>\n\n"
         f"<b>From:</b> <code>{from_addr}</code>\n\n"
         "Now enter the <b>recipient's email address</b>:\n"
         "<i>(e.g. someone@gmail.com)</i>",
@@ -1018,7 +1100,7 @@ async def compose_receive_to(update: Update, context: ContextTypes.DEFAULT_TYPE)
         [InlineKeyboardButton("❌ Cancel", callback_data="back_menu")]
     ])
     await update.message.reply_text(
-        "✉️ <b>Compose Email</b>\n\n"
+        "✉️ <b>Send Email</b>\n\n"
         f"<b>From:</b> <code>{compose['from']}</code>\n"
         f"<b>To:</b> <code>{to_addr}</code>\n\n"
         "Enter the <b>subject</b>:",
@@ -1050,7 +1132,7 @@ async def compose_receive_subject(update: Update, context: ContextTypes.DEFAULT_
         [InlineKeyboardButton("❌ Cancel", callback_data="back_menu")]
     ])
     await update.message.reply_text(
-        "✉️ <b>Compose Email</b>\n\n"
+        "✉️ <b>Send Email</b>\n\n"
         f"<b>From:</b> <code>{compose['from']}</code>\n"
         f"<b>To:</b> <code>{compose['to']}</code>\n"
         f"<b>Subject:</b> {_escape_html(subject)}\n\n"
@@ -1222,7 +1304,7 @@ async def compose_confirm(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
             logger.exception("Failed to save sent email to DB")
 
         keyboard = InlineKeyboardMarkup([
-            [InlineKeyboardButton("✉️ Compose Another", callback_data="menu_compose")],
+            [InlineKeyboardButton("✉️ Send Another", callback_data="menu_compose")],
             [InlineKeyboardButton("📤 Sent History", callback_data="menu_sent")],
             [InlineKeyboardButton("🔙 Back to Menu", callback_data="back_menu")],
         ])
@@ -1288,7 +1370,7 @@ async def sent_history_callback(update: Update, context: ContextTypes.DEFAULT_TY
 
     if not sent:
         keyboard = InlineKeyboardMarkup([
-            [InlineKeyboardButton("✉️ Compose Email", callback_data="menu_compose")],
+            [InlineKeyboardButton("✉️ Send Email", callback_data="menu_compose")],
             [InlineKeyboardButton("🔙 Back to Menu", callback_data="back_menu")],
         ])
         await query.edit_message_text(
