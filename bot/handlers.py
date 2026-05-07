@@ -1003,7 +1003,7 @@ async def compose_receive_body(update: Update, context: ContextTypes.DEFAULT_TYP
 async def compose_confirm(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """Send the composed email directly from the VPS."""
     query = update.callback_query
-    await query.answer("Sending email… ✉️")
+    await query.answer("Checking DNS & sending… ✉️")
 
     compose = context.user_data.get("compose")
     if not compose or "body" not in compose:
@@ -1029,9 +1029,55 @@ async def compose_confirm(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
         )
         return
 
-    # Show sending status
+    # ── Check DNS records before sending ─────────────────────
+    from_domain = compose["from"].split("@")[1]
+    server_ip = context.bot_data.get("server_ip", "YOUR_SERVER_IP")
+
+    from email_sender import check_sending_dns
+    dns_status = check_sending_dns(from_domain)
+
+    if not dns_status["ready"]:
+        missing = ", ".join(dns_status["missing"])
+        dns_help = []
+        if not dns_status["spf"]:
+            dns_help.append(
+                f"📌 <b>SPF record:</b>\n"
+                f"  Type: <code>TXT</code>\n"
+                f"  Name: <code>@</code>\n"
+                f"  Value: <code>v=spf1 a mx ip4:{server_ip} -all</code>"
+            )
+        if not dns_status["dmarc"]:
+            dns_help.append(
+                f"📌 <b>DMARC record:</b>\n"
+                f"  Type: <code>TXT</code>\n"
+                f"  Name: <code>_dmarc</code>\n"
+                f"  Value: <code>v=DMARC1; p=none;</code>"
+            )
+
+        keyboard = InlineKeyboardMarkup([
+            [InlineKeyboardButton("🔄 Check Again & Send", callback_data="compose_confirm")],
+            [InlineKeyboardButton("❌ Cancel", callback_data="compose_cancel")],
+            [InlineKeyboardButton("🔙 Back to Menu", callback_data="back_menu")],
+        ])
+        await query.edit_message_text(
+            f"⚠️ <b>DNS Not Ready for Sending</b>\n\n"
+            f"Your domain <code>{from_domain}</code> is missing "
+            f"<b>{missing}</b> DNS record(s).\n\n"
+            "Without these, emails will be rejected or land in spam.\n\n"
+            "━━━━━━━━━━━━━━━━━━━━━━\n\n"
+            "Add these DNS records:\n\n"
+            + "\n\n".join(dns_help) + "\n\n"
+            "━━━━━━━━━━━━━━━━━━━━━━\n\n"
+            "After adding the records, wait a few minutes for DNS to propagate, "
+            "then tap <b>Check Again & Send</b>.",
+            reply_markup=keyboard,
+            parse_mode="HTML",
+        )
+        return
+
+    # ── DNS is good — send the email ─────────────────────────
     await query.edit_message_text(
-        "⏳ <b>Sending your email…</b>",
+        "✅ DNS verified!\n⏳ <b>Sending your email…</b>",
         parse_mode="HTML",
     )
 
@@ -1097,8 +1143,7 @@ async def compose_confirm(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
         ])
         await query.edit_message_text(
             "❌ <b>Failed to Send</b>\n\n"
-            f"<b>Error:</b> {_escape_html(result['error'] or 'Unknown error')}\n\n"
-            "Please check your DNS records and try again.",
+            f"<b>Error:</b> {_escape_html(result['error'] or 'Unknown error')}",
             reply_markup=keyboard,
             parse_mode="HTML",
         )

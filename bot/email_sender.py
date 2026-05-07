@@ -16,6 +16,11 @@ import aiosmtplib
 
 logger = logging.getLogger(__name__)
 
+# Timeout per MX host connection attempt (seconds)
+MX_CONNECT_TIMEOUT = 15
+# Max MX hosts to try before giving up
+MAX_MX_ATTEMPTS = 2
+
 
 def resolve_mx(domain: str) -> list[str]:
     """
@@ -37,6 +42,61 @@ def resolve_mx(domain: str) -> list[str]:
     except Exception as e:
         logger.error("Failed to resolve MX for %s: %s", domain, e)
         return [domain]
+
+
+def check_spf_record(domain: str) -> dict:
+    """
+    Check if the domain has an SPF record that authorizes this server.
+    Returns dict with 'exists' (bool) and 'record' (str or None).
+    """
+    try:
+        answers = dns.resolver.resolve(domain, "TXT")
+        for rdata in answers:
+            txt = rdata.to_text().strip('"')
+            if txt.startswith("v=spf1"):
+                return {"exists": True, "record": txt}
+        return {"exists": False, "record": None}
+    except (dns.resolver.NoAnswer, dns.resolver.NXDOMAIN):
+        return {"exists": False, "record": None}
+    except Exception as e:
+        logger.warning("Failed to check SPF for %s: %s", domain, e)
+        return {"exists": False, "record": None}
+
+
+def check_dmarc_record(domain: str) -> bool:
+    """Check if the domain has a DMARC record."""
+    try:
+        answers = dns.resolver.resolve(f"_dmarc.{domain}", "TXT")
+        for rdata in answers:
+            txt = rdata.to_text().strip('"')
+            if "v=DMARC1" in txt:
+                return True
+        return False
+    except Exception:
+        return False
+
+
+def check_sending_dns(domain: str) -> dict:
+    """
+    Check all DNS records needed for sending emails from a domain.
+    Returns a dict with status of each record.
+    """
+    spf = check_spf_record(domain)
+    dmarc = check_dmarc_record(domain)
+
+    all_good = spf["exists"] and dmarc
+    missing = []
+    if not spf["exists"]:
+        missing.append("SPF")
+    if not dmarc:
+        missing.append("DMARC")
+
+    return {
+        "ready": all_good,
+        "spf": spf["exists"],
+        "dmarc": dmarc,
+        "missing": missing,
+    }
 
 
 class EmailSender:
@@ -110,19 +170,21 @@ class EmailSender:
             logger.exception("Failed to build email message")
             return {"success": False, "error": f"Failed to build email: {e}"}
 
-        # Try each MX host in priority order
+        # Try each MX host in priority order (limited attempts)
         last_error = None
-        for mx_host in mx_hosts:
+        hosts_to_try = mx_hosts[:MAX_MX_ATTEMPTS]
+
+        for mx_host in hosts_to_try:
             try:
-                kwargs = {
-                    "hostname": mx_host,
-                    "port": 25,
-                    "start_tls": True,
-                }
+                logger.info("Attempting delivery to %s via %s (timeout=%ds)", to_addr, mx_host, MX_CONNECT_TIMEOUT)
 
-                logger.info("Attempting delivery to %s via %s", to_addr, mx_host)
-
-                await aiosmtplib.send(msg, **kwargs)
+                await aiosmtplib.send(
+                    msg,
+                    hostname=mx_host,
+                    port=25,
+                    start_tls=True,
+                    timeout=MX_CONNECT_TIMEOUT,
+                )
 
                 logger.info(
                     "Email sent successfully: %s → %s (via %s)",
@@ -139,6 +201,15 @@ class EmailSender:
                 if e.code in (550, 551, 552, 553, 554):
                     return {"success": False, "error": last_error}
                 continue
+
+            except (TimeoutError, OSError) as e:
+                last_error = (
+                    "Outbound port 25 appears to be blocked on this server. "
+                    "Contact your VPS provider (e.g. AWS) to unblock SMTP outbound traffic."
+                )
+                logger.warning("Timeout/connection error with %s: %s", mx_host, e)
+                # If port 25 is blocked, no point trying other MX hosts
+                return {"success": False, "error": last_error}
 
             except aiosmtplib.SMTPException as e:
                 last_error = f"SMTP error with {mx_host}: {e}"
