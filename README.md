@@ -98,22 +98,42 @@ SMTP_PORT=25
 
 > ⚠️ **Port 25 must be open both inbound (receiving) and outbound (sending).**
 
+#### Inbound (for receiving emails)
+
 **On your VPS provider's dashboard** (e.g. AWS Lightsail, DigitalOcean, etc.):
 
 1. Go to your instance → **Networking** / **Firewall** settings
-2. Add firewall rules:
+2. Add a firewall rule:
 
 | Protocol | Port | Direction | Source |
 |---|---|---|---|
 | **TCP** | **25** | **Inbound** | Any (`0.0.0.0/0`) |
-| **TCP** | **25** | **Outbound** | Any (`0.0.0.0/0`) |
-
-> 💡 Some VPS providers (like AWS Lightsail) block outbound port 25 by default. You may need to contact support to unblock it.
 
 **Also open port 25 on the OS firewall:**
 ```bash
 sudo ufw allow 25/tcp
 ```
+
+#### Outbound (for sending emails)
+
+> ⚠️ **AWS blocks outbound port 25 by default.** You must request removal before sending emails will work.
+
+**For AWS Lightsail / EC2:**
+
+1. Go to the [AWS SMTP Limit Removal Form](https://aws.amazon.com/forms/ec2-email-limit-rdns-request)
+2. Fill in:
+   - **Email address**: your AWS account email
+   - **Use case**: "I run a self-hosted email server for my personal domain"
+   - **Elastic IP / Instance IP**: your server's public IP
+   - ✅ Check "I agree to only send to people who've requested my mail"
+3. Submit — AWS usually approves within **24 hours**
+
+**Test if outbound port 25 is open:**
+```bash
+nc -zv gmail-smtp-in.l.google.com 25 -w 5
+```
+- ✅ `Connection succeeded` → sending will work
+- ❌ `Timed out` → outbound port 25 is still blocked
 
 ### 6. DNS Setup
 
