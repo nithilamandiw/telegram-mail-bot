@@ -84,6 +84,17 @@ class Database:
 
             CREATE INDEX IF NOT EXISTS idx_sent_emails_chat_id
                 ON sent_emails(chat_id);
+
+            CREATE TABLE IF NOT EXISTS blocked_senders (
+                id         INTEGER PRIMARY KEY AUTOINCREMENT,
+                chat_id    TEXT NOT NULL,
+                sender     TEXT NOT NULL,
+                created_at TEXT NOT NULL,
+                UNIQUE(chat_id, sender)
+            );
+
+            CREATE INDEX IF NOT EXISTS idx_blocked_senders_chat_id
+                ON blocked_senders(chat_id);
         """)
         conn.commit()
 
@@ -240,5 +251,54 @@ class Database:
             (chat_id, limit),
         ).fetchall()
         return [dict(r) for r in rows]
+
+    # ── Blocked Senders ──────────────────────────────────────
+
+    def add_blocked_sender(self, chat_id: str, sender: str) -> bool:
+        """Block a sender (email or @domain). Returns False if already blocked."""
+        try:
+            self._conn.execute(
+                "INSERT INTO blocked_senders (chat_id, sender, created_at) VALUES (?, ?, ?)",
+                (chat_id, sender.lower().strip(), datetime.now(timezone.utc).isoformat()),
+            )
+            self._conn.commit()
+            return True
+        except sqlite3.IntegrityError:
+            return False
+
+    def remove_blocked_sender(self, chat_id: str, sender: str) -> bool:
+        """Unblock a sender. Returns True if a row was deleted."""
+        cursor = self._conn.execute(
+            "DELETE FROM blocked_senders WHERE chat_id = ? AND sender = ?",
+            (chat_id, sender.lower().strip()),
+        )
+        self._conn.commit()
+        return cursor.rowcount > 0
+
+    def get_blocked_senders(self, chat_id: str) -> list[dict]:
+        """Get all blocked senders for a chat."""
+        rows = self._conn.execute(
+            "SELECT * FROM blocked_senders WHERE chat_id = ? ORDER BY created_at DESC",
+            (chat_id,),
+        ).fetchall()
+        return [dict(r) for r in rows]
+
+    def is_sender_blocked(self, chat_id: str, sender_email: str) -> bool:
+        """
+        Check if a sender is blocked. Supports:
+        - Exact email match (e.g. spam@example.com)
+        - Domain-level match (e.g. @example.com blocks all from that domain)
+        """
+        sender_email = sender_email.lower().strip()
+        # Extract just the email if it contains a display name like "Name <email>"
+        if "<" in sender_email and ">" in sender_email:
+            sender_email = sender_email.split("<")[-1].rstrip(">")
+        domain = "@" + sender_email.split("@")[-1] if "@" in sender_email else ""
+
+        row = self._conn.execute(
+            "SELECT 1 FROM blocked_senders WHERE chat_id = ? AND (sender = ? OR sender = ?) LIMIT 1",
+            (chat_id, sender_email, domain),
+        ).fetchone()
+        return row is not None
 
 

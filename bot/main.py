@@ -25,12 +25,20 @@ from handlers import (
     COMPOSE_WAITING_BODY,
     COMPOSE_WAITING_SUBJECT,
     COMPOSE_WAITING_TO,
+    WAITING_BLOCK_SENDER,
     WAITING_DOMAIN,
     WAITING_EMAIL,
     add_domain_command,
     add_domain_prompt,
     add_domain_receive,
     back_to_menu,
+    block_confirm,
+    block_from_email,
+    block_sender_command,
+    block_sender_prompt,
+    block_sender_receive,
+    blocked_senders_menu,
+    blocked_senders_page,
     compose_cancel,
     compose_confirm,
     compose_emails_page,
@@ -59,6 +67,8 @@ from handlers import (
     list_emails_command,
     sent_history_callback,
     start,
+    unblock_confirm,
+    unblock_sender,
     verify_domain_action,
     verify_domain_command,
     verify_menu,
@@ -174,12 +184,31 @@ def main() -> None:
         per_message=False,
     )
 
+    # ── Conversation: Block Sender ───────────────────────────
+    block_sender_conv = ConversationHandler(
+        entry_points=[
+            CallbackQueryHandler(block_sender_prompt, pattern="^menu_block_sender$"),
+        ],
+        states={
+            WAITING_BLOCK_SENDER: [
+                MessageHandler(filters.TEXT & ~filters.COMMAND, block_sender_receive),
+            ],
+        },
+        fallbacks=[
+            CallbackQueryHandler(blocked_senders_menu, pattern="^menu_blocked$"),
+            CallbackQueryHandler(back_to_menu, pattern="^back_menu$"),
+            CommandHandler("start", start),
+        ],
+        per_message=False,
+    )
+
     # ── Register handlers (order matters!) ───────────────────
 
     # Conversation handlers first (they have priority for their patterns)
     application.add_handler(add_domain_conv)
     application.add_handler(create_email_conv)
     application.add_handler(compose_email_conv)
+    application.add_handler(block_sender_conv)
 
     # /start command
     application.add_handler(CommandHandler("start", start))
@@ -193,6 +222,7 @@ def main() -> None:
     application.add_handler(CommandHandler("deletemail", delete_email_command))
     application.add_handler(CommandHandler("mydomains", view_domains_command))
     application.add_handler(CommandHandler("deletedomain", delete_domain_command))
+    application.add_handler(CommandHandler("blocksender", block_sender_command))
 
     # Button callbacks
     application.add_handler(CallbackQueryHandler(back_to_menu, pattern="^back_menu$"))
@@ -217,6 +247,14 @@ def main() -> None:
     application.add_handler(CallbackQueryHandler(compose_confirm, pattern="^compose_confirm$"))
     application.add_handler(CallbackQueryHandler(compose_cancel, pattern="^compose_cancel$"))
     application.add_handler(CallbackQueryHandler(sent_history_callback, pattern="^menu_sent$"))
+
+    # Blocked senders callbacks
+    application.add_handler(CallbackQueryHandler(blocked_senders_menu, pattern="^menu_blocked$"))
+    application.add_handler(CallbackQueryHandler(blocked_senders_page, pattern=r"^blocked_page_"))
+    application.add_handler(CallbackQueryHandler(block_from_email, pattern=r"^block_"))
+    application.add_handler(CallbackQueryHandler(block_confirm, pattern=r"^confirm_block_"))
+    application.add_handler(CallbackQueryHandler(unblock_sender, pattern=r"^unblock_"))
+    application.add_handler(CallbackQueryHandler(unblock_confirm, pattern=r"^confirm_unblock_"))
 
     # Noop handler (for pagination page number display button)
     application.add_handler(CallbackQueryHandler(

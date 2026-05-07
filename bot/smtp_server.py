@@ -185,6 +185,16 @@ class EmailHandler:
 
             chat_id = record["chat_id"]
 
+            # Check if sender is blocked for this chat
+            from_raw = sender
+            if "<" in from_raw and ">" in from_raw:
+                from_raw = from_raw.split("<")[-1].rstrip(">")
+            from_raw = from_raw.strip().lower()
+
+            if self.db.is_sender_blocked(chat_id, from_raw):
+                logger.info("Blocked email from %s to %s (chat_id=%s)", from_raw, to_email, chat_id)
+                continue
+
             # Build the text message
             header = (
                 "📧 <b>New Email</b>\n\n"
@@ -247,7 +257,19 @@ class EmailHandler:
                     logger.exception("Failed to publish to Telegraph")
 
             # Send the text message
-            await self._send_message(chat_id, message, reply_markup=reply_markup)
+            # Build inline buttons: Telegraph link + Block Sender
+            buttons_row_1 = []
+            if reply_markup and "inline_keyboard" in reply_markup:
+                buttons_row_1 = reply_markup["inline_keyboard"][0]
+
+            block_btn = {"text": "\U0001f6ab Block Sender", "callback_data": f"block_{from_raw}"}
+            final_markup = {
+                "inline_keyboard": (
+                    [buttons_row_1] if buttons_row_1 else []
+                ) + [[block_btn]]
+            }
+
+            await self._send_message(chat_id, message, reply_markup=final_markup)
 
             # Send each attachment
             for att in attachments:

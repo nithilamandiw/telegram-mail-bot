@@ -28,6 +28,9 @@ COMPOSE_WAITING_TO = 10
 COMPOSE_WAITING_SUBJECT = 11
 COMPOSE_WAITING_BODY = 12
 
+# Block sender states
+WAITING_BLOCK_SENDER = 20
+
 
 def get_db(context: ContextTypes.DEFAULT_TYPE) -> Database:
     return context.bot_data["db"]
@@ -54,6 +57,9 @@ def main_menu_keyboard() -> InlineKeyboardMarkup:
         ],
         [
             InlineKeyboardButton("🗑️ Delete Email", callback_data="menu_delete"),
+            InlineKeyboardButton("🚫 Blocked Senders", callback_data="menu_blocked"),
+        ],
+        [
             InlineKeyboardButton("❓ Help", callback_data="menu_help"),
         ],
     ])
@@ -109,14 +115,17 @@ async def help_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
         "📋 <b>My Emails</b> — View all your emails\n"
         "✉️ <b>Send Email</b> — Send an email\n"
         "📤 <b>Sent History</b> — View sent emails\n"
-        "🗑️ <b>Delete Email</b> — Remove an email\n\n"
+        "🗑️ <b>Delete Email</b> — Remove an email\n"
+        "🚫 <b>Blocked Senders</b> — Block/unblock senders\n\n"
         "You can also type commands:\n"
         "<code>/start</code> — Main menu\n"
         "<code>/adddomain example.com</code>\n"
         "<code>/verifydomain example.com</code>\n"
         "<code>/createemail hello@example.com</code>\n"
         "<code>/listemails</code>\n"
-        "<code>/deletemail hello@example.com</code>"
+        "<code>/deletemail hello@example.com</code>\n"
+        "<code>/blocksender spam@example.com</code>\n"
+        "<code>/blocksender @spamdomain.com</code>"
     )
     keyboard = InlineKeyboardMarkup([
         [InlineKeyboardButton("🔙 Back to Menu", callback_data="back_menu")]
@@ -1403,6 +1412,319 @@ async def sent_history_callback(update: Update, context: ContextTypes.DEFAULT_TY
 
     await query.edit_message_text(
         text,
+        reply_markup=keyboard,
+        parse_mode="HTML",
+    )
+
+
+# ══════════════════════════════════════════════════════════════
+#  Blocked Senders
+# ══════════════════════════════════════════════════════════════
+
+BLOCKED_PER_PAGE = 10
+
+
+async def blocked_senders_menu(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Show paginated list of blocked senders."""
+    query = update.callback_query
+    await query.answer()
+    await _show_blocked_page(query.edit_message_text, update, context, page=0)
+
+
+async def blocked_senders_page(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Handle pagination for blocked senders list."""
+    query = update.callback_query
+    await query.answer()
+    # Pattern: blocked_page_<N>
+    page = int(query.data.replace("blocked_page_", "", 1))
+    await _show_blocked_page(query.edit_message_text, update, context, page=page)
+
+
+async def _show_blocked_page(send_fn, update: Update, context: ContextTypes.DEFAULT_TYPE, page: int) -> None:
+    """Shared logic for displaying blocked senders list."""
+    chat_id = str(update.effective_chat.id)
+    db = get_db(context)
+    blocked = db.get_blocked_senders(chat_id)
+
+    if not blocked:
+        keyboard = InlineKeyboardMarkup([
+            [InlineKeyboardButton("➕ Block a Sender", callback_data="menu_block_sender")],
+            [InlineKeyboardButton("🔙 Back to Menu", callback_data="back_menu")],
+        ])
+        await send_fn(
+            "🚫 <b>Blocked Senders</b>\n\nNo senders blocked yet.",
+            reply_markup=keyboard,
+            parse_mode="HTML",
+        )
+        return
+
+    total = len(blocked)
+    total_pages = (total + BLOCKED_PER_PAGE - 1) // BLOCKED_PER_PAGE
+    page = max(0, min(page, total_pages - 1))
+    start_idx = page * BLOCKED_PER_PAGE
+    page_items = blocked[start_idx:start_idx + BLOCKED_PER_PAGE]
+
+    lines = [f"🚫 <b>Blocked Senders</b> ({total} total)\n"]
+    for i, item in enumerate(page_items, start_idx + 1):
+        lines.append(f"{i}. <code>{item['sender']}</code>")
+
+    buttons = [
+        [InlineKeyboardButton(f"🔓 {item['sender']}", callback_data=f"unblock_{item['sender']}")]
+        for item in page_items
+    ]
+
+    # Pagination
+    if total_pages > 1:
+        nav = []
+        if page > 0:
+            nav.append(InlineKeyboardButton("⬅️ Prev", callback_data=f"blocked_page_{page - 1}"))
+        nav.append(InlineKeyboardButton(f"{page + 1}/{total_pages}", callback_data="noop"))
+        if page < total_pages - 1:
+            nav.append(InlineKeyboardButton("Next ➡️", callback_data=f"blocked_page_{page + 1}"))
+        buttons.append(nav)
+
+    buttons.append([InlineKeyboardButton("➕ Block a Sender", callback_data="menu_block_sender")])
+    buttons.append([InlineKeyboardButton("🔙 Back to Menu", callback_data="back_menu")])
+
+    await send_fn(
+        "\n".join(lines) + "\n\nTap a sender to <b>unblock</b> them:",
+        reply_markup=InlineKeyboardMarkup(buttons),
+        parse_mode="HTML",
+    )
+
+
+async def block_sender_prompt(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    """Ask user to type the email or domain to block."""
+    query = update.callback_query
+    await query.answer()
+    keyboard = InlineKeyboardMarkup([
+        [InlineKeyboardButton("❌ Cancel", callback_data="menu_blocked")]
+    ])
+    await query.edit_message_text(
+        "🚫 <b>Block a Sender</b>\n\n"
+        "Send me the email address or domain to block:\n\n"
+        "• <code>spam@example.com</code> — blocks one address\n"
+        "• <code>@example.com</code> — blocks entire domain",
+        reply_markup=keyboard,
+        parse_mode="HTML",
+    )
+    return WAITING_BLOCK_SENDER
+
+
+async def block_sender_receive(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    """Process the email/domain the user typed to block."""
+    text = update.message.text.strip().lower()
+
+    # Validate: must be an email or @domain
+    is_domain = text.startswith("@") and "." in text
+    is_email = EMAIL_REGEX.match(text)
+
+    if not is_domain and not is_email:
+        keyboard = InlineKeyboardMarkup([
+            [InlineKeyboardButton("🔄 Try Again", callback_data="menu_block_sender")],
+            [InlineKeyboardButton("🔙 Back to Menu", callback_data="back_menu")],
+        ])
+        await update.message.reply_text(
+            "❌ Invalid format.\n\n"
+            "Use an email: <code>spam@example.com</code>\n"
+            "Or a domain: <code>@example.com</code>",
+            reply_markup=keyboard,
+            parse_mode="HTML",
+        )
+        return ConversationHandler.END
+
+    chat_id = str(update.effective_chat.id)
+    db = get_db(context)
+
+    if not db.add_blocked_sender(chat_id, text):
+        keyboard = InlineKeyboardMarkup([
+            [InlineKeyboardButton("🚫 Blocked List", callback_data="menu_blocked")],
+            [InlineKeyboardButton("🔙 Back to Menu", callback_data="back_menu")],
+        ])
+        await update.message.reply_text(
+            f"⚠️ <code>{text}</code> is already blocked.",
+            reply_markup=keyboard,
+            parse_mode="HTML",
+        )
+        return ConversationHandler.END
+
+    label = "domain" if is_domain else "sender"
+    keyboard = InlineKeyboardMarkup([
+        [InlineKeyboardButton("🚫 View Blocked List", callback_data="menu_blocked")],
+        [InlineKeyboardButton("➕ Block Another", callback_data="menu_block_sender")],
+        [InlineKeyboardButton("🔙 Back to Menu", callback_data="back_menu")],
+    ])
+    await update.message.reply_text(
+        f"✅ {label.capitalize()} <code>{text}</code> blocked!\n\n"
+        "Emails from this sender will no longer be forwarded.",
+        reply_markup=keyboard,
+        parse_mode="HTML",
+    )
+    return ConversationHandler.END
+
+
+async def block_from_email(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Quick-block a sender from the incoming email notification button."""
+    query = update.callback_query
+    await query.answer()
+
+    sender = query.data.replace("block_", "", 1).strip().lower()
+
+    keyboard = InlineKeyboardMarkup([
+        [
+            InlineKeyboardButton("✅ Yes, block", callback_data=f"confirm_block_{sender}"),
+            InlineKeyboardButton("❌ No, cancel", callback_data="back_menu"),
+        ],
+        [
+            InlineKeyboardButton(f"🌐 Block @{sender.split('@')[-1]}", callback_data=f"confirm_block_@{sender.split('@')[-1]}"),
+        ] if "@" in sender else [],
+    ])
+    # Filter out empty rows
+    keyboard = InlineKeyboardMarkup([row for row in keyboard.inline_keyboard if row])
+
+    await query.edit_message_text(
+        f"🚫 <b>Block Sender</b>\n\n"
+        f"Block <code>{sender}</code>?\n\n"
+        "You will no longer receive emails from this sender.",
+        reply_markup=keyboard,
+        parse_mode="HTML",
+    )
+
+
+async def block_confirm(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Confirm and execute blocking a sender."""
+    query = update.callback_query
+    await query.answer()
+
+    sender = query.data.replace("confirm_block_", "", 1).strip().lower()
+    chat_id = str(update.effective_chat.id)
+    db = get_db(context)
+
+    if not db.add_blocked_sender(chat_id, sender):
+        keyboard = InlineKeyboardMarkup([
+            [InlineKeyboardButton("🚫 Blocked List", callback_data="menu_blocked")],
+            [InlineKeyboardButton("🔙 Back to Menu", callback_data="back_menu")],
+        ])
+        await query.edit_message_text(
+            f"⚠️ <code>{sender}</code> is already blocked.",
+            reply_markup=keyboard,
+            parse_mode="HTML",
+        )
+        return
+
+    is_domain = sender.startswith("@")
+    label = "Domain" if is_domain else "Sender"
+    keyboard = InlineKeyboardMarkup([
+        [InlineKeyboardButton("🚫 View Blocked List", callback_data="menu_blocked")],
+        [InlineKeyboardButton("🔙 Back to Menu", callback_data="back_menu")],
+    ])
+    await query.edit_message_text(
+        f"✅ {label} <code>{sender}</code> blocked!\n\n"
+        "Emails from this sender will no longer be forwarded.",
+        reply_markup=keyboard,
+        parse_mode="HTML",
+    )
+
+
+async def unblock_sender(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Ask for confirmation before unblocking."""
+    query = update.callback_query
+    await query.answer()
+
+    sender = query.data.replace("unblock_", "", 1)
+
+    keyboard = InlineKeyboardMarkup([
+        [
+            InlineKeyboardButton("✅ Yes, unblock", callback_data=f"confirm_unblock_{sender}"),
+            InlineKeyboardButton("❌ No, keep blocked", callback_data="menu_blocked"),
+        ]
+    ])
+    await query.edit_message_text(
+        f"🔓 <b>Unblock Sender</b>\n\n"
+        f"Unblock <code>{sender}</code>?\n\n"
+        "You will start receiving emails from this sender again.",
+        reply_markup=keyboard,
+        parse_mode="HTML",
+    )
+
+
+async def unblock_confirm(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Execute unblocking a sender."""
+    query = update.callback_query
+    await query.answer()
+
+    sender = query.data.replace("confirm_unblock_", "", 1)
+    chat_id = str(update.effective_chat.id)
+    db = get_db(context)
+
+    if not db.remove_blocked_sender(chat_id, sender):
+        keyboard = InlineKeyboardMarkup([
+            [InlineKeyboardButton("🚫 Blocked List", callback_data="menu_blocked")],
+            [InlineKeyboardButton("🔙 Back to Menu", callback_data="back_menu")],
+        ])
+        await query.edit_message_text(
+            f"⚠️ <code>{sender}</code> was not found in your blocklist.",
+            reply_markup=keyboard,
+            parse_mode="HTML",
+        )
+        return
+
+    keyboard = InlineKeyboardMarkup([
+        [InlineKeyboardButton("🚫 Blocked List", callback_data="menu_blocked")],
+        [InlineKeyboardButton("🔙 Back to Menu", callback_data="back_menu")],
+    ])
+    await query.edit_message_text(
+        f"🔓 <code>{sender}</code> unblocked!\n\n"
+        "You will now receive emails from this sender.",
+        reply_markup=keyboard,
+        parse_mode="HTML",
+    )
+
+
+# Text command fallback
+async def block_sender_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Handle /blocksender <email|@domain> text command."""
+    if not context.args or len(context.args) != 1:
+        await update.message.reply_text(
+            "Usage:\n"
+            "<code>/blocksender spam@example.com</code>\n"
+            "<code>/blocksender @spamdomain.com</code>",
+            parse_mode="HTML",
+        )
+        return
+
+    sender = context.args[0].lower().strip()
+    is_domain = sender.startswith("@") and "." in sender
+    is_email = EMAIL_REGEX.match(sender)
+
+    if not is_domain and not is_email:
+        await update.message.reply_text(
+            "❌ Invalid format. Use an email or @domain.",
+            parse_mode="HTML",
+        )
+        return
+
+    chat_id = str(update.effective_chat.id)
+    db = get_db(context)
+
+    if not db.add_blocked_sender(chat_id, sender):
+        keyboard = InlineKeyboardMarkup([
+            [InlineKeyboardButton("🔙 Menu", callback_data="back_menu")]
+        ])
+        await update.message.reply_text(
+            f"⚠️ <code>{sender}</code> is already blocked.",
+            reply_markup=keyboard,
+            parse_mode="HTML",
+        )
+        return
+
+    label = "Domain" if is_domain else "Sender"
+    keyboard = InlineKeyboardMarkup([
+        [InlineKeyboardButton("🚫 Blocked List", callback_data="menu_blocked")],
+        [InlineKeyboardButton("🔙 Menu", callback_data="back_menu")],
+    ])
+    await update.message.reply_text(
+        f"✅ {label} <code>{sender}</code> blocked!",
         reply_markup=keyboard,
         parse_mode="HTML",
     )
