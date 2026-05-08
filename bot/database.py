@@ -220,13 +220,6 @@ class Database:
         )
         self._conn.commit()
 
-    def get_email_by_id(self, email_id: str) -> dict | None:
-        """Look up a stored email by its UUID."""
-        row = self._conn.execute(
-            "SELECT * FROM emails WHERE id = ?", (email_id,)
-        ).fetchone()
-        return dict(row) if row else None
-
     # ── Sent Emails (Outbox) ─────────────────────────────────
 
     def save_sent_email(

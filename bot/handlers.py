@@ -13,6 +13,7 @@ from telegram import InlineKeyboardButton, InlineKeyboardMarkup, Update
 from telegram.ext import ContextTypes, ConversationHandler
 
 from database import Database
+from email_sender import check_all_dns
 
 logger = logging.getLogger(__name__)
 
@@ -252,7 +253,6 @@ async def dns_check_callback(update: Update, context: ContextTypes.DEFAULT_TYPE)
     domain = query.data.replace("dnscheck_", "", 1)
     server_ip = context.bot_data.get("server_ip", "YOUR_SERVER_IP")
 
-    from email_sender import check_all_dns
     status = check_all_dns(domain, server_ip)
 
     lines = [f"🔍 <b>DNS Check for</b> <code>{domain}</code>\n"]
@@ -1232,7 +1232,6 @@ async def compose_confirm(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
     from_domain = compose["from"].split("@")[1]
     server_ip = context.bot_data.get("server_ip", "YOUR_SERVER_IP")
 
-    from email_sender import check_all_dns
     dns_status = check_all_dns(from_domain, server_ip)
 
     if not dns_status["send_ready"]:

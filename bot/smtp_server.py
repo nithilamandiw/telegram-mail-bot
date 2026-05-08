@@ -17,9 +17,9 @@ from html import unescape
 
 import aiohttp
 from aiosmtpd.controller import Controller
-from aiosmtpd.smtp import SMTP, Envelope, Session
 
 from database import Database
+from telegraph_publisher import publish_email_to_telegraph
 
 logger = logging.getLogger(__name__)
 
@@ -29,14 +29,22 @@ TELEGRAM_FILE_LIMIT = 50 * 1024 * 1024  # 50 MB
 
 def strip_html(html_text: str) -> str:
     """Remove HTML tags and decode entities to plain text."""
+    # Normalize line endings
+    text = html_text.replace("\r\n", "\n").replace("\r", "\n")
     # Remove entire <head> section (contains meta, styles, scripts, etc.)
-    text = re.sub(r"<head[\s>].*?</head>", "", html_text, flags=re.IGNORECASE | re.DOTALL)
+    text = re.sub(r"<head[\s>].*?</head>", "", text, flags=re.IGNORECASE | re.DOTALL)
     # Remove <style> blocks and their CSS content
     text = re.sub(r"<style[\s>].*?</style>", "", text, flags=re.IGNORECASE | re.DOTALL)
     # Remove <script> blocks
     text = re.sub(r"<script[\s>].*?</script>", "", text, flags=re.IGNORECASE | re.DOTALL)
     # Remove HTML comments (including conditional comments like <!--[if ...]>)
     text = re.sub(r"<!--.*?-->", "", text, flags=re.DOTALL)
+    # Convert non-breaking spaces and zero-width characters to normal spaces
+    text = text.replace("\xa0", " ")               # &nbsp;
+    text = text.replace("\u200b", "")              # zero-width space
+    text = text.replace("\u200c", "")              # zero-width non-joiner
+    text = text.replace("\u200d", "")              # zero-width joiner
+    text = text.replace("\ufeff", "")              # BOM / zero-width no-break space
     # Convert <br> to newlines
     text = re.sub(r"<br\s*/?>", "\n", text, flags=re.IGNORECASE)
     # Convert block-level elements to newlines for readability
@@ -44,6 +52,8 @@ def strip_html(html_text: str) -> str:
     text = re.sub(r"</p>", "\n", text, flags=re.IGNORECASE)
     text = re.sub(r"<div[^>]*>", "\n", text, flags=re.IGNORECASE)
     text = re.sub(r"</div>", "", text, flags=re.IGNORECASE)
+    text = re.sub(r"<td[^>]*>", " ", text, flags=re.IGNORECASE)    # table cells → space
+    text = re.sub(r"</td>", " ", text, flags=re.IGNORECASE)
     text = re.sub(r"<tr[^>]*>", "\n", text, flags=re.IGNORECASE)
     text = re.sub(r"<h[1-6][^>]*>", "\n\n", text, flags=re.IGNORECASE)
     text = re.sub(r"</h[1-6]>", "\n", text, flags=re.IGNORECASE)
@@ -52,10 +62,15 @@ def strip_html(html_text: str) -> str:
     text = re.sub(r"<[^>]+>", "", text)
     # Decode HTML entities
     text = unescape(text)
-    # Clean up excessive whitespace
-    text = re.sub(r"[ \t]+", " ", text)           # collapse horizontal whitespace
-    text = re.sub(r" *\n *", "\n", text)          # trim spaces around newlines
-    text = re.sub(r"\n{3,}", "\n\n", text)        # max 2 consecutive newlines
+    # ── Aggressive whitespace cleanup ────────────────────────
+    text = re.sub(r"[ \t]+", " ", text)            # collapse horizontal whitespace
+    text = re.sub(r" *\n *", "\n", text)           # trim spaces around newlines
+    text = re.sub(r"\n{3,}", "\n\n", text)         # max 2 consecutive newlines
+    # Remove lines that are only whitespace
+    lines = [line for line in text.split("\n") if line.strip()]
+    text = "\n".join(lines)
+    # Final pass: max 2 consecutive newlines after rejoining
+    text = re.sub(r"\n{3,}", "\n\n", text)
     return text.strip()
 
 
@@ -237,7 +252,6 @@ class EmailHandler:
             reply_markup = None
             if self.telegraph_client and body:
                 try:
-                    from telegraph_publisher import publish_email_to_telegraph
                     telegraph_url = await publish_email_to_telegraph(
                         client=self.telegraph_client,
                         subject=subject,
