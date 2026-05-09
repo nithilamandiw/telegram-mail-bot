@@ -171,12 +171,19 @@ class EmailHandler:
 
     async def handle_RCPT(self, server, session, envelope, address, rcpt_options):
         normalized = address.lower().strip()
+        domain = normalized.split("@")[-1] if "@" in normalized else ""
+
+        # Reject if domain is not verified
+        if domain not in self.db.get_all_verified_domains():
+            logger.info("Rejected %s — domain not verified", normalized)
+            return "550 User not found"
+
+        # Reject if email address is not registered
         record = self.db.get_email(normalized)
         if record is None:
-            domain = normalized.split("@")[-1] if "@" in normalized else ""
-            if domain not in self.db.get_all_verified_domains():
-                logger.info("Rejected %s — not registered", normalized)
-                return "550 User not found"
+            logger.info("Rejected %s — not registered", normalized)
+            return "550 User not found"
+
         envelope.rcpt_tos.append(address)
         return "250 OK"
 
