@@ -459,28 +459,36 @@ async def verify_domain_action(update: Update, context: ContextTypes.DEFAULT_TYP
         return
 
     # Check verification TXT token in DNS before allowing verification
-    token = db.get_verification_token(chat_id, domain) or ""
-    if token:
-        result = check_verification_txt(domain, token)
-        if not result["found"]:
-            keyboard = InlineKeyboardMarkup([
-                [InlineKeyboardButton(f"🔍 Check DNS for {domain}", callback_data=f"dnscheck_{domain}")],
-                [InlineKeyboardButton("🔄 Try Again", callback_data=f"verify_{domain}")],
-                [InlineKeyboardButton("🔙 Back to Menu", callback_data="back_menu")],
-            ])
-            await query.edit_message_text(
-                f"❌ <b>Verification failed</b> for <code>{domain}</code>\n\n"
-                "Your verification TXT record was not found in DNS.\n\n"
-                "📌 Please add this TXT record:\n\n"
-                f"  Type:   <code>TXT</code>\n"
-                f"  Name:   <code>@</code>\n"
-                f"  Value:  <code>{token}</code>\n"
-                f"  TTL:    <code>300</code>\n\n"
-                "💡 DNS changes can take a few minutes to propagate.",
-                reply_markup=keyboard,
-                parse_mode="HTML",
-            )
-            return
+    token = db.get_verification_token(chat_id, domain)
+    if not token:
+        # Legacy domain added before verification tokens — generate one now
+        token = f"crystal-verify={uuid.uuid4().hex[:16]}"
+        db._conn.execute(
+            "UPDATE domains SET verification_token = ? WHERE chat_id = ? AND domain = ?",
+            (token, chat_id, domain),
+        )
+        db._conn.commit()
+
+    result = check_verification_txt(domain, token)
+    if not result["found"]:
+        keyboard = InlineKeyboardMarkup([
+            [InlineKeyboardButton(f"🔍 Check DNS for {domain}", callback_data=f"dnscheck_{domain}")],
+            [InlineKeyboardButton("🔄 Try Again", callback_data=f"verify_{domain}")],
+            [InlineKeyboardButton("🔙 Back to Menu", callback_data="back_menu")],
+        ])
+        await query.edit_message_text(
+            f"❌ <b>Verification failed</b> for <code>{domain}</code>\n\n"
+            "Your verification TXT record was not found in DNS.\n\n"
+            "📌 Please add this TXT record:\n\n"
+            f"  Type:   <code>TXT</code>\n"
+            f"  Name:   <code>@</code>\n"
+            f"  Value:  <code>{token}</code>\n"
+            f"  TTL:    <code>300</code>\n\n"
+            "💡 DNS changes can take a few minutes to propagate.",
+            reply_markup=keyboard,
+            parse_mode="HTML",
+        )
+        return
 
     db.verify_domain(chat_id, domain)
     keyboard = InlineKeyboardMarkup([
@@ -516,22 +524,30 @@ async def verify_domain_command(update: Update, context: ContextTypes.DEFAULT_TY
         return
 
     # Check verification TXT token in DNS before allowing verification
-    token = db.get_verification_token(chat_id, domain) or ""
-    if token:
-        result = check_verification_txt(domain, token)
-        if not result["found"]:
-            await update.message.reply_text(
-                f"❌ <b>Verification failed</b> for <code>{domain}</code>\n\n"
-                "Your verification TXT record was not found in DNS.\n\n"
-                "📌 Please add this TXT record:\n\n"
-                f"  Type:   <code>TXT</code>\n"
-                f"  Name:   <code>@</code>\n"
-                f"  Value:  <code>{token}</code>\n"
-                f"  TTL:    <code>300</code>\n\n"
-                "💡 DNS changes can take a few minutes to propagate.",
-                parse_mode="HTML",
-            )
-            return
+    token = db.get_verification_token(chat_id, domain)
+    if not token:
+        # Legacy domain added before verification tokens — generate one now
+        token = f"crystal-verify={uuid.uuid4().hex[:16]}"
+        db._conn.execute(
+            "UPDATE domains SET verification_token = ? WHERE chat_id = ? AND domain = ?",
+            (token, chat_id, domain),
+        )
+        db._conn.commit()
+
+    result = check_verification_txt(domain, token)
+    if not result["found"]:
+        await update.message.reply_text(
+            f"❌ <b>Verification failed</b> for <code>{domain}</code>\n\n"
+            "Your verification TXT record was not found in DNS.\n\n"
+            "📌 Please add this TXT record:\n\n"
+            f"  Type:   <code>TXT</code>\n"
+            f"  Name:   <code>@</code>\n"
+            f"  Value:  <code>{token}</code>\n"
+            f"  TTL:    <code>300</code>\n\n"
+            "💡 DNS changes can take a few minutes to propagate.",
+            parse_mode="HTML",
+        )
+        return
 
     db.verify_domain(chat_id, domain)
     keyboard = InlineKeyboardMarkup([
