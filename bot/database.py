@@ -108,15 +108,8 @@ class Database:
         columns = [row[1] for row in cursor.fetchall()]
         if "verification_token" not in columns:
             conn.execute("ALTER TABLE domains ADD COLUMN verification_token TEXT")
-            # Un-verify all existing domains so they must re-verify with a token
+            # One-time: un-verify existing domains so they must re-verify with a token
             conn.execute("UPDATE domains SET verified = 0 WHERE verification_token IS NULL")
-            conn.commit()
-        else:
-            # Also catch domains that somehow got verified without a token
-            conn.execute(
-                "UPDATE domains SET verified = 0 "
-                "WHERE verified = 1 AND (verification_token IS NULL OR verification_token = '')"
-            )
             conn.commit()
 
     # ── Domains ──────────────────────────────────────────────

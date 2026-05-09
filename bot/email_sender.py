@@ -130,8 +130,10 @@ def check_verification_txt(domain: str, expected_token: str) -> dict:
     try:
         answers = dns.resolver.resolve(domain, "TXT")
         for rdata in answers:
-            txt = rdata.to_text().strip('"')
-            if txt.strip() == expected_token.strip():
+            # Use raw bytes (rdata.strings) for reliable parsing —
+            # rdata.to_text() can add quotes/escaping that break exact matches
+            txt = b"".join(rdata.strings).decode("utf-8", errors="replace").strip()
+            if expected_token.strip() in txt:
                 return {"found": True, "token": txt}
         return {"found": False, "token": None}
     except (dns.resolver.NoAnswer, dns.resolver.NXDOMAIN):
