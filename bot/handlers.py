@@ -13,7 +13,7 @@ from telegram import InlineKeyboardButton, InlineKeyboardMarkup, Update
 from telegram.ext import ContextTypes, ConversationHandler
 
 from database import Database
-from email_sender import check_all_dns, check_verification_txt
+from email_sender import check_all_dns
 
 logger = logging.getLogger(__name__)
 
@@ -427,11 +427,12 @@ async def verify_menu(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
 async def verify_domain_action(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """Verify a specific domain (callback: verify_<domain>)."""
     query = update.callback_query
-    await query.answer()
+    await query.answer("Checking DNS records… 🔍")
 
     domain = query.data.replace("verify_", "", 1)
     chat_id = str(update.effective_chat.id)
     db = get_db(context)
+    server_ip = context.bot_data.get("server_ip", "YOUR_SERVER_IP")
     record = db.get_domain(chat_id, domain)
 
     if not record:
@@ -458,10 +459,9 @@ async def verify_domain_action(update: Update, context: ContextTypes.DEFAULT_TYP
         )
         return
 
-    # Check verification TXT token in DNS before allowing verification
+    # Ensure token exists
     token = db.get_verification_token(chat_id, domain)
     if not token:
-        # Legacy domain added before verification tokens — generate one now
         token = f"crystal-verify={uuid.uuid4().hex[:16]}"
         db._conn.execute(
             "UPDATE domains SET verification_token = ? WHERE chat_id = ? AND domain = ?",
@@ -469,35 +469,70 @@ async def verify_domain_action(update: Update, context: ContextTypes.DEFAULT_TYP
         )
         db._conn.commit()
 
-    result = check_verification_txt(domain, token)
-    if not result["found"]:
+    # Full DNS check — require A + MX + TXT verification
+    status = check_all_dns(domain, server_ip, verification_token=token)
+
+    missing = []
+    if not status["a_record"].get("correct"):
+        missing.append(
+            f"❌ <b>A Record</b>\n"
+            f"  Type: <code>A</code>\n"
+            f"  Name: <code>mail</code>\n"
+            f"  Value: <code>{server_ip}</code>"
+        )
+    if not status["mx_record"].get("correct"):
+        missing.append(
+            f"❌ <b>MX Record</b>\n"
+            f"  Type: <code>MX</code>\n"
+            f"  Name: <code>@</code>\n"
+            f"  Value: <code>mail.{domain}</code>\n"
+            f"  Priority: <code>10</code>"
+        )
+    if not status["verify_txt"]["found"]:
+        missing.append(
+            f"❌ <b>Verification TXT</b>\n"
+            f"  Type: <code>TXT</code>\n"
+            f"  Name: <code>@</code>\n"
+            f"  Value: <code>{token}</code>"
+        )
+
+    # Optional records — warn but don't block
+    warnings = []
+    if not status["spf_record"]["exists"]:
+        warnings.append(f"⚠️ <b>SPF</b> — missing (needed for sending)")
+    if not status["dmarc_record"]:
+        warnings.append(f"⚠️ <b>DMARC</b> — missing (needed for sending)")
+
+    if missing:
+        lines = [f"❌ <b>Verification failed</b> for <code>{domain}</code>\n"]
+        lines.append("The following required DNS records are missing:\n")
+        lines.extend(missing)
+        if warnings:
+            lines.append("\n" + "\n".join(warnings))
+        lines.append("\n💡 Add the missing records, then tap <b>Try Again</b>.")
+
         keyboard = InlineKeyboardMarkup([
             [InlineKeyboardButton(f"🔍 Check DNS for {domain}", callback_data=f"dnscheck_{domain}")],
             [InlineKeyboardButton("🔄 Try Again", callback_data=f"verify_{domain}")],
             [InlineKeyboardButton("🔙 Back to Menu", callback_data="back_menu")],
         ])
         await query.edit_message_text(
-            f"❌ <b>Verification failed</b> for <code>{domain}</code>\n\n"
-            "Your verification TXT record was not found in DNS.\n\n"
-            "📌 Please add this TXT record:\n\n"
-            f"  Type:   <code>TXT</code>\n"
-            f"  Name:   <code>@</code>\n"
-            f"  Value:  <code>{token}</code>\n"
-            f"  TTL:    <code>300</code>\n\n"
-            "💡 DNS changes can take a few minutes to propagate.",
+            "\n".join(lines),
             reply_markup=keyboard,
             parse_mode="HTML",
         )
         return
 
     db.verify_domain(chat_id, domain)
+    warn_text = ""
+    if warnings:
+        warn_text = "\n" + "\n".join(warnings) + "\n"
     keyboard = InlineKeyboardMarkup([
         [InlineKeyboardButton(f"📧 Create Email on {domain}", callback_data=f"create_on_{domain}")],
         [InlineKeyboardButton("🔙 Back to Menu", callback_data="back_menu")],
     ])
     await query.edit_message_text(
-        f"✅ Domain <code>{domain}</code> verified!\n\n"
-        "⚠️ DNS propagation can take up to 48 hours.\n"
+        f"✅ Domain <code>{domain}</code> verified!\n{warn_text}\n"
         "You can now create email addresses 👇",
         reply_markup=keyboard,
         parse_mode="HTML",
@@ -514,6 +549,7 @@ async def verify_domain_command(update: Update, context: ContextTypes.DEFAULT_TY
     domain = context.args[0].lower().strip()
     chat_id = str(update.effective_chat.id)
     db = get_db(context)
+    server_ip = context.bot_data.get("server_ip", "YOUR_SERVER_IP")
     record = db.get_domain(chat_id, domain)
 
     if not record:
@@ -523,10 +559,9 @@ async def verify_domain_command(update: Update, context: ContextTypes.DEFAULT_TY
         await update.message.reply_text(f"✅ <code>{domain}</code> is already verified!", parse_mode="HTML")
         return
 
-    # Check verification TXT token in DNS before allowing verification
+    # Ensure token exists
     token = db.get_verification_token(chat_id, domain)
     if not token:
-        # Legacy domain added before verification tokens — generate one now
         token = f"crystal-verify={uuid.uuid4().hex[:16]}"
         db._conn.execute(
             "UPDATE domains SET verification_token = ? WHERE chat_id = ? AND domain = ?",
@@ -534,19 +569,32 @@ async def verify_domain_command(update: Update, context: ContextTypes.DEFAULT_TY
         )
         db._conn.commit()
 
-    result = check_verification_txt(domain, token)
-    if not result["found"]:
-        await update.message.reply_text(
-            f"❌ <b>Verification failed</b> for <code>{domain}</code>\n\n"
-            "Your verification TXT record was not found in DNS.\n\n"
-            "📌 Please add this TXT record:\n\n"
-            f"  Type:   <code>TXT</code>\n"
-            f"  Name:   <code>@</code>\n"
-            f"  Value:  <code>{token}</code>\n"
-            f"  TTL:    <code>300</code>\n\n"
-            "💡 DNS changes can take a few minutes to propagate.",
-            parse_mode="HTML",
+    # Full DNS check — require A + MX + TXT verification
+    status = check_all_dns(domain, server_ip, verification_token=token)
+
+    missing = []
+    if not status["a_record"].get("correct"):
+        missing.append(
+            f"❌ <b>A Record</b>\n"
+            f"  Type: <code>A</code>  Name: <code>mail</code>  Value: <code>{server_ip}</code>"
         )
+    if not status["mx_record"].get("correct"):
+        missing.append(
+            f"❌ <b>MX Record</b>\n"
+            f"  Type: <code>MX</code>  Name: <code>@</code>  Value: <code>mail.{domain}</code>"
+        )
+    if not status["verify_txt"]["found"]:
+        missing.append(
+            f"❌ <b>Verification TXT</b>\n"
+            f"  Type: <code>TXT</code>  Name: <code>@</code>  Value: <code>{token}</code>"
+        )
+
+    if missing:
+        lines = [f"❌ <b>Verification failed</b> for <code>{domain}</code>\n"]
+        lines.append("Missing required DNS records:\n")
+        lines.extend(missing)
+        lines.append("\n💡 Add the missing records and try again.")
+        await update.message.reply_text("\n".join(lines), parse_mode="HTML")
         return
 
     db.verify_domain(chat_id, domain)
