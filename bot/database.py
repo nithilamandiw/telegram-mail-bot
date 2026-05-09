@@ -39,6 +39,7 @@ class Database:
                 chat_id   TEXT    NOT NULL,
                 domain    TEXT    NOT NULL,
                 verified  INTEGER NOT NULL DEFAULT 0,
+                verification_token TEXT,
                 created_at TEXT   NOT NULL,
                 PRIMARY KEY (chat_id, domain)
             );
@@ -97,17 +98,30 @@ class Database:
                 ON blocked_senders(chat_id);
         """)
         conn.commit()
+        # Migration: add verification_token column if missing (existing DBs)
+        self._migrate_add_verification_token()
+
+    def _migrate_add_verification_token(self) -> None:
+        """Add verification_token column to domains table if it doesn't exist."""
+        conn = self._conn
+        cursor = conn.execute("PRAGMA table_info(domains)")
+        columns = [row[1] for row in cursor.fetchall()]
+        if "verification_token" not in columns:
+            conn.execute("ALTER TABLE domains ADD COLUMN verification_token TEXT")
+            conn.commit()
 
     # ── Domains ──────────────────────────────────────────────
 
-    def add_domain(self, chat_id: str, domain: str) -> bool:
+    def add_domain(self, chat_id: str, domain: str, verification_token: str = "") -> bool:
         """
-        Register a domain for a chat. Returns False if it already exists.
+        Register a domain for a chat with a unique verification token.
+        Returns False if it already exists for this chat.
         """
         try:
             self._conn.execute(
-                "INSERT INTO domains (chat_id, domain, verified, created_at) VALUES (?, ?, 0, ?)",
-                (chat_id, domain, datetime.now(timezone.utc).isoformat()),
+                "INSERT INTO domains (chat_id, domain, verified, verification_token, created_at) "
+                "VALUES (?, ?, 0, ?, ?)",
+                (chat_id, domain, verification_token, datetime.now(timezone.utc).isoformat()),
             )
             self._conn.commit()
             return True
@@ -143,6 +157,25 @@ class Database:
             "SELECT DISTINCT domain FROM domains WHERE verified = 1"
         ).fetchall()
         return [r["domain"] for r in rows]
+
+    def is_domain_verified_by_others(self, domain: str, chat_id: str) -> bool:
+        """
+        Check if a domain is already verified by a different user.
+        Used to prevent hijacking of domains that are already owned.
+        """
+        row = self._conn.execute(
+            "SELECT 1 FROM domains WHERE domain = ? AND chat_id != ? AND verified = 1 LIMIT 1",
+            (domain, chat_id),
+        ).fetchone()
+        return row is not None
+
+    def get_verification_token(self, chat_id: str, domain: str) -> str | None:
+        """Get the verification token for a domain."""
+        row = self._conn.execute(
+            "SELECT verification_token FROM domains WHERE chat_id = ? AND domain = ?",
+            (chat_id, domain),
+        ).fetchone()
+        return row["verification_token"] if row else None
 
     def delete_domain(self, chat_id: str, domain: str) -> bool:
         """Delete a domain and all its associated email addresses."""

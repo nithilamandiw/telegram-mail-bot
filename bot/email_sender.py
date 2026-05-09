@@ -119,24 +119,52 @@ def check_dmarc_record(domain: str) -> bool:
         return False
 
 
-def check_all_dns(domain: str, server_ip: str) -> dict:
+def check_verification_txt(domain: str, expected_token: str) -> dict:
     """
-    Check all 4 DNS records needed for full email functionality.
+    Check if the domain has a TXT record matching the expected verification token.
+    The token format is: crystal-verify=<hex>
+    Returns dict with 'found' (bool) and 'token' (str or None).
+    """
+    if not expected_token:
+        return {"found": False, "token": None}
+    try:
+        answers = dns.resolver.resolve(domain, "TXT")
+        for rdata in answers:
+            txt = rdata.to_text().strip('"')
+            if txt.strip() == expected_token.strip():
+                return {"found": True, "token": txt}
+        return {"found": False, "token": None}
+    except (dns.resolver.NoAnswer, dns.resolver.NXDOMAIN):
+        return {"found": False, "token": None}
+    except Exception as e:
+        logger.warning("Failed to check verification TXT for %s: %s", domain, e)
+        return {"found": False, "token": None}
+
+
+def check_all_dns(domain: str, server_ip: str, verification_token: str = "") -> dict:
+    """
+    Check all DNS records needed for full email functionality.
     Returns a detailed status dict for each record.
     """
     a = check_a_record(domain, server_ip)
     mx = check_mx_record(domain)
     spf = check_spf_record(domain)
     dmarc = check_dmarc_record(domain)
+    verify_txt = check_verification_txt(domain, verification_token)
 
     return {
         "a_record": a,
         "mx_record": mx,
         "spf_record": spf,
         "dmarc_record": dmarc,
+        "verify_txt": verify_txt,
         "receive_ready": a.get("correct", False) and mx.get("correct", False),
         "send_ready": spf["exists"] and dmarc,
-        "all_ready": a.get("correct", False) and mx.get("correct", False) and spf["exists"] and dmarc,
+        "verify_ready": verify_txt["found"],
+        "all_ready": (
+            a.get("correct", False) and mx.get("correct", False)
+            and spf["exists"] and dmarc and verify_txt["found"]
+        ),
     }
 
 

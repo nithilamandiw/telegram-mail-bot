@@ -13,7 +13,7 @@ from telegram import InlineKeyboardButton, InlineKeyboardMarkup, Update
 from telegram.ext import ContextTypes, ConversationHandler
 
 from database import Database
-from email_sender import check_all_dns
+from email_sender import check_all_dns, check_verification_txt
 
 logger = logging.getLogger(__name__)
 
@@ -171,6 +171,19 @@ async def add_domain_receive(update: Update, context: ContextTypes.DEFAULT_TYPE)
 
     chat_id = str(update.effective_chat.id)
     db = get_db(context)
+
+    # Block if domain is already verified by another user
+    if db.is_domain_verified_by_others(domain, chat_id):
+        keyboard = InlineKeyboardMarkup([
+            [InlineKeyboardButton("🔙 Back to Menu", callback_data="back_menu")]
+        ])
+        await update.message.reply_text(
+            f"❌ Domain <code>{domain}</code> is already owned by another user.",
+            reply_markup=keyboard,
+            parse_mode="HTML",
+        )
+        return ConversationHandler.END
+
     existing = db.get_domain(chat_id, domain)
 
     if existing:
@@ -185,7 +198,9 @@ async def add_domain_receive(update: Update, context: ContextTypes.DEFAULT_TYPE)
         )
         return ConversationHandler.END
 
-    db.add_domain(chat_id, domain)
+    # Generate a unique verification token for this user+domain
+    token = f"crystal-verify={uuid.uuid4().hex[:16]}"
+    db.add_domain(chat_id, domain, verification_token=token)
     server_ip = context.bot_data.get("server_ip", "YOUR_SERVER_IP")
 
     text = (
@@ -216,7 +231,14 @@ async def add_domain_receive(update: Update, context: ContextTypes.DEFAULT_TYPE)
         f"  Value:  <code>v=DMARC1; p=none;</code>\n"
         f"  TTL:    <code>300</code>\n\n"
         "━━━━━━━━━━━━━━━━━━━━━━\n\n"
-        "⏳ After adding all DNS records, tap \u003cb\u003eCheck DNS\u003c/b\u003e to verify."
+        "🔑 <b>DOMAIN VERIFICATION</b>\n\n"
+        "📌 <b>Step 5 — Add a Verification TXT record:</b>\n\n"
+        f"  Type:   <code>TXT</code>\n"
+        f"  Name:   <code>@</code>\n"
+        f"  Value:  <code>{token}</code>\n"
+        f"  TTL:    <code>300</code>\n\n"
+        "━━━━━━━━━━━━━━━━━━━━━━\n\n"
+        "⏳ After adding all DNS records, tap <b>Check DNS</b> to verify."
     )
     keyboard = InlineKeyboardMarkup([
         [InlineKeyboardButton(f"🔍 Check DNS for {domain}", callback_data=f"dnscheck_{domain}")],
@@ -251,9 +273,12 @@ async def dns_check_callback(update: Update, context: ContextTypes.DEFAULT_TYPE)
     await query.answer("Checking DNS records… 🔍")
 
     domain = query.data.replace("dnscheck_", "", 1)
+    chat_id = str(update.effective_chat.id)
     server_ip = context.bot_data.get("server_ip", "YOUR_SERVER_IP")
+    db = get_db(context)
+    token = db.get_verification_token(chat_id, domain) or ""
 
-    status = check_all_dns(domain, server_ip)
+    status = check_all_dns(domain, server_ip, verification_token=token)
 
     lines = [f"🔍 <b>DNS Check for</b> <code>{domain}</code>\n"]
     lines.append("━━━━━━━━━━━━━━━━━━━━━━\n")
@@ -317,6 +342,18 @@ async def dns_check_callback(update: Update, context: ContextTypes.DEFAULT_TYPE)
             f"  Value: <code>v=DMARC1; p=none;</code>"
         )
 
+    # 5. Verification TXT Record
+    verify = status["verify_txt"]
+    if verify["found"]:
+        lines.append(f"\n✅ <b>Verification TXT</b> — found")
+    else:
+        lines.append(
+            f"\n❌ <b>Verification TXT</b> — not found\n"
+            f"  Type: <code>TXT</code>\n"
+            f"  Name: <code>@</code>\n"
+            f"  Value: <code>{token}</code>"
+        )
+
     lines.append("\n━━━━━━━━━━━━━━━━━━━━━━")
 
     # Summary
@@ -331,12 +368,16 @@ async def dns_check_callback(update: Update, context: ContextTypes.DEFAULT_TYPE)
             lines.append("📤 Sending: ✅ Ready")
         else:
             lines.append("📤 Sending: ❌ Not ready")
+        if status["verify_ready"]:
+            lines.append("🔑 Ownership: ✅ Verified")
+        else:
+            lines.append("🔑 Ownership: ❌ Not verified")
         lines.append("\n💡 Add the missing records above, then tap <b>🔄 Refresh</b>.")
 
     keyboard_buttons = [
         [InlineKeyboardButton(f"🔄 Refresh", callback_data=f"dnscheck_{domain}")],
     ]
-    if status["receive_ready"]:
+    if status["receive_ready"] and status["verify_ready"]:
         keyboard_buttons.append(
             [InlineKeyboardButton(f"✅ Verify {domain}", callback_data=f"verify_{domain}")]
         )
@@ -417,6 +458,30 @@ async def verify_domain_action(update: Update, context: ContextTypes.DEFAULT_TYP
         )
         return
 
+    # Check verification TXT token in DNS before allowing verification
+    token = db.get_verification_token(chat_id, domain) or ""
+    if token:
+        result = check_verification_txt(domain, token)
+        if not result["found"]:
+            keyboard = InlineKeyboardMarkup([
+                [InlineKeyboardButton(f"🔍 Check DNS for {domain}", callback_data=f"dnscheck_{domain}")],
+                [InlineKeyboardButton("🔄 Try Again", callback_data=f"verify_{domain}")],
+                [InlineKeyboardButton("🔙 Back to Menu", callback_data="back_menu")],
+            ])
+            await query.edit_message_text(
+                f"❌ <b>Verification failed</b> for <code>{domain}</code>\n\n"
+                "Your verification TXT record was not found in DNS.\n\n"
+                "📌 Please add this TXT record:\n\n"
+                f"  Type:   <code>TXT</code>\n"
+                f"  Name:   <code>@</code>\n"
+                f"  Value:  <code>{token}</code>\n"
+                f"  TTL:    <code>300</code>\n\n"
+                "💡 DNS changes can take a few minutes to propagate.",
+                reply_markup=keyboard,
+                parse_mode="HTML",
+            )
+            return
+
     db.verify_domain(chat_id, domain)
     keyboard = InlineKeyboardMarkup([
         [InlineKeyboardButton(f"📧 Create Email on {domain}", callback_data=f"create_on_{domain}")],
@@ -449,6 +514,24 @@ async def verify_domain_command(update: Update, context: ContextTypes.DEFAULT_TY
     if record["verified"]:
         await update.message.reply_text(f"✅ <code>{domain}</code> is already verified!", parse_mode="HTML")
         return
+
+    # Check verification TXT token in DNS before allowing verification
+    token = db.get_verification_token(chat_id, domain) or ""
+    if token:
+        result = check_verification_txt(domain, token)
+        if not result["found"]:
+            await update.message.reply_text(
+                f"❌ <b>Verification failed</b> for <code>{domain}</code>\n\n"
+                "Your verification TXT record was not found in DNS.\n\n"
+                "📌 Please add this TXT record:\n\n"
+                f"  Type:   <code>TXT</code>\n"
+                f"  Name:   <code>@</code>\n"
+                f"  Value:  <code>{token}</code>\n"
+                f"  TTL:    <code>300</code>\n\n"
+                "💡 DNS changes can take a few minutes to propagate.",
+                parse_mode="HTML",
+            )
+            return
 
     db.verify_domain(chat_id, domain)
     keyboard = InlineKeyboardMarkup([
