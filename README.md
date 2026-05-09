@@ -11,6 +11,8 @@ A Telegram bot that lets you **receive and send** emails from your own custom do
 - 🔒 **Secure links** — Telegraph URLs use random UUIDs (unguessable)
 - 📤 **Sent history** — track all outgoing emails with status
 - 🗂️ **Multi-domain** — manage unlimited domains and email addresses
+- 🔑 **Domain ownership verification** — unique TXT token per user prevents unauthorized domain claims
+- 🚫 **Sender blocking** — block specific emails or entire domains
 - 🖱️ **Button UI** — interactive menus for domain & email management
 
 ## 🤖 Live Demo
@@ -38,8 +40,8 @@ Telegram → Bot → Resolve recipient MX → Deliver directly → Recipient Inb
 
 ### Receiving Emails
 1. **Add your domain** to the bot
-2. **Set DNS records** (A record + MX record pointing to your server)
-3. **Verify** the domain through the bot
+2. **Set DNS records** (A record + MX record + verification TXT token)
+3. **Verify** the domain — bot checks all DNS records + ownership token
 4. **Create email addresses** on your domain
 5. **Receive emails** forwarded to your Telegram chat 🎉
 6. **View full emails** by tapping the "🌐 View Full Email" button
@@ -168,11 +170,9 @@ sudo pm2 restart email-bot   # Restart after code changes
 
 ### 7. DNS Setup
 
-> 💡 Once the bot is running, use `/adddomain` to register your domain. The bot will show you exactly which DNS records to add and let you verify them with the **🔍 Check DNS** button.
+> 💡 Once the bot is running, use `/adddomain` to register your domain. The bot will show you exactly which DNS records to add (including a **unique verification token**) and let you verify them with the **🔍 Check DNS** button.
 
-#### For Receiving Emails
-
-The bot gives you two DNS records to add:
+#### For Receiving Emails (Required)
 
 | Step | Type | Host | Value | Priority |
 |---|---|---|---|---|
@@ -180,6 +180,16 @@ The bot gives you two DNS records to add:
 | 2 | **MX** | `@` | `mail.yourdomain.com` | 10 |
 
 > ⚠️ MX records require a **hostname**, not an IP address. That's why the A record is needed first.
+
+#### For Domain Ownership Verification (Required)
+
+When you add a domain, the bot generates a **unique verification token** for you. You must add it as a TXT record to prove you own the domain:
+
+| Step | Type | Host | Value |
+|---|---|---|---|
+| 5 | **TXT** | `@` | `crystal-verify=<your-unique-token>` |
+
+> 🔑 Each user gets a **different token**, so no one else can claim your domain. This is the same approach used by Google Workspace, Cloudflare, etc.
 
 #### For Sending Emails (Recommended)
 
@@ -192,6 +202,15 @@ To improve deliverability and avoid spam folders, add these DNS records:
 | **PTR** | *(set via VPS provider)* | `mail.yourdomain.com` | Reverse DNS — proves IP ownership |
 
 > 💡 **SPF is the most important one.** It tells recipient mail servers that your VPS IP is authorized to send emails for your domain.
+
+#### Verification Requirements
+
+The bot requires **all 3** of these before marking a domain as verified:
+- ✅ A record pointing to your server
+- ✅ MX record pointing to `mail.yourdomain.com`
+- ✅ Verification TXT token (unique per user)
+
+SPF and DMARC are recommended but won't block verification.
 
 ---
 
@@ -231,12 +250,12 @@ To improve deliverability and avoid spam folders, add these DNS records:
 ### Receiving
 ```
 /adddomain example.com
-  → Bot shows A record + MX record instructions
+  → Bot shows DNS instructions + unique verification token
 
-(Add both DNS records in your provider)
+(Add A record + MX record + verification TXT in your DNS provider)
 
-/verifydomain example.com
-  → Domain is now active
+"✅ Verify Domain" or /verifydomain example.com
+  → Bot checks A + MX + TXT token → Domain verified ✅
 
 /createemail hello@example.com
   → Email is live!
