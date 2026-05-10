@@ -61,6 +61,8 @@ from handlers import (
     delete_email_confirm,
     delete_email_execute,
     delete_email_menu,
+    delete_email_select_domain,
+    delete_emails_page,
     error_handler,
     help_callback,
     list_emails_callback,
@@ -237,6 +239,8 @@ def main() -> None:
     application.add_handler(CallbackQueryHandler(create_email_menu, pattern="^menu_create_email$"))
     application.add_handler(CallbackQueryHandler(list_emails_callback, pattern="^menu_list$"))
     application.add_handler(CallbackQueryHandler(delete_email_menu, pattern="^menu_delete$"))
+    application.add_handler(CallbackQueryHandler(delete_email_select_domain, pattern=r"^delemail_domain_"))
+    application.add_handler(CallbackQueryHandler(delete_emails_page, pattern=r"^delemail_page_"))
     application.add_handler(CallbackQueryHandler(delete_email_confirm, pattern=r"^del_"))
     application.add_handler(CallbackQueryHandler(delete_email_execute, pattern=r"^confirm_del_"))
 

@@ -807,8 +807,11 @@ async def _show_email_list(send_fn, update: Update, context: ContextTypes.DEFAUL
 #  Delete Email
 # ══════════════════════════════════════════════════════════════
 
+DELETE_EMAILS_PER_PAGE = 10
+
+
 async def delete_email_menu(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    """Show all emails as buttons to delete."""
+    """Show domains first, then user picks a domain to see its emails."""
     query = update.callback_query
     await query.answer()
 
@@ -824,14 +827,95 @@ async def delete_email_menu(update: Update, context: ContextTypes.DEFAULT_TYPE) 
         await query.edit_message_text("No emails to delete.", reply_markup=keyboard, parse_mode="HTML")
         return
 
-    buttons = [
-        [InlineKeyboardButton(f"🗑️ {e['email']}", callback_data=f"del_{e['email']}")]
-        for e in emails
-    ]
+    # Group emails by domain and show domains as buttons
+    domains = db.get_domains_for_chat(chat_id)
+    buttons = []
+    for d in domains:
+        domain_emails = [e for e in emails if e["domain"] == d["domain"]]
+        if domain_emails:
+            count = len(domain_emails)
+            label = f"🌐 {d['domain']} ({count} email{'s' if count != 1 else ''})"
+            buttons.append([InlineKeyboardButton(label, callback_data=f"delemail_domain_{d['domain']}")])
     buttons.append([InlineKeyboardButton("🔙 Back to Menu", callback_data="back_menu")])
 
     await query.edit_message_text(
-        "🗑️ <b>Select an email to delete:</b>",
+        "🗑️ <b>Delete Email</b>\n\n"
+        "Select a <b>domain</b> to see its emails:",
+        reply_markup=InlineKeyboardMarkup(buttons),
+        parse_mode="HTML",
+    )
+
+
+async def delete_email_select_domain(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """User picked a domain — show paginated emails for that domain."""
+    query = update.callback_query
+    await query.answer()
+
+    domain = query.data.replace("delemail_domain_", "", 1)
+    await _show_delete_emails_page(update, context, domain, page=0)
+
+
+async def delete_emails_page(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Handle pagination for delete email selection."""
+    query = update.callback_query
+    await query.answer()
+
+    # Pattern: delemail_page_<domain>_<N>
+    data = query.data.replace("delemail_page_", "", 1)
+    parts = data.rsplit("_", 1)
+    domain = parts[0]
+    page = int(parts[1]) if len(parts) == 2 else 0
+
+    await _show_delete_emails_page(update, context, domain, page)
+
+
+async def _show_delete_emails_page(update: Update, context, domain: str, page: int) -> None:
+    """Show a page of emails for a domain (delete flow)."""
+    query = update.callback_query
+    chat_id = str(update.effective_chat.id)
+    db = get_db(context)
+    emails = db.get_emails_for_domain(chat_id, domain)
+
+    if not emails:
+        keyboard = InlineKeyboardMarkup([
+            [InlineKeyboardButton("🔙 Back", callback_data="menu_delete")],
+            [InlineKeyboardButton("🔙 Back to Menu", callback_data="back_menu")],
+        ])
+        await query.edit_message_text(
+            f"📭 No emails on <code>{domain}</code>.",
+            reply_markup=keyboard,
+            parse_mode="HTML",
+        )
+        return
+
+    total = len(emails)
+    total_pages = (total + DELETE_EMAILS_PER_PAGE - 1) // DELETE_EMAILS_PER_PAGE
+    page = max(0, min(page, total_pages - 1))
+    start_idx = page * DELETE_EMAILS_PER_PAGE
+    page_emails = emails[start_idx:start_idx + DELETE_EMAILS_PER_PAGE]
+
+    buttons = [
+        [InlineKeyboardButton(f"🗑️ {e['email']}", callback_data=f"del_{e['email']}")]
+        for e in page_emails
+    ]
+
+    # Pagination buttons
+    if total_pages > 1:
+        nav = []
+        if page > 0:
+            nav.append(InlineKeyboardButton("⬅️ Prev", callback_data=f"delemail_page_{domain}_{page - 1}"))
+        nav.append(InlineKeyboardButton(f"{page + 1}/{total_pages}", callback_data="noop"))
+        if page < total_pages - 1:
+            nav.append(InlineKeyboardButton("Next ➡️", callback_data=f"delemail_page_{domain}_{page + 1}"))
+        buttons.append(nav)
+
+    buttons.append([InlineKeyboardButton("🔙 Back to Domains", callback_data="menu_delete")])
+    buttons.append([InlineKeyboardButton("🔙 Back to Menu", callback_data="back_menu")])
+
+    await query.edit_message_text(
+        f"🗑️ <b>Delete Email</b>\n\n"
+        f"Domain: <code>{domain}</code>\n\n"
+        f"Select an email to delete ({total} total):",
         reply_markup=InlineKeyboardMarkup(buttons),
         parse_mode="HTML",
     )
